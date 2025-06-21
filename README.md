@@ -4,8 +4,6 @@
 
 This project is a standalone Command-Line Interface (CLI) application that acts as a **Personal Research Assistant**. It enables you to ingest your own documents (PDFs, TXT, Markdown, JPG, PNG) into a local, searchable knowledge base and then interact with that knowledge using a powerful AI, ensuring answers are directly sourced from your data.
 
-**Conceived and built as a one-day internship project with the assistance of Claude**, this tool demonstrates rapid prototyping and the significant acceleration offered by modern AI development.
-
 ---
 
 ## ✨ Features
