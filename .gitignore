@@ -1,0 +1,5 @@
+env/
+research.db/
+__pycache__/
+
+config.py
