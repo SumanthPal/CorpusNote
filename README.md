@@ -1,4 +1,4 @@
-# Research Assistant CLI
+# CorpusNote CLI
 
 ## Chat with Your Documents, Powered by AI
 
