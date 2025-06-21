@@ -67,11 +67,10 @@ Follow these steps to set up and run the Research Assistant CLI on your local ma
 1.  **Clone the repository:**
     Begin by cloning the project repository from GitHub to your local machine.
     ```bash
-    git clone [https://github.com/your-username/research-assistant-cli.git](https://github.com/your-username/research-assistant-cli.git)
+    git clone [https://github.com/your-username/CorpusNote.git](https://github.com/your-username/CorpusNote.git)
     cd research-assistant-cli
     ```
-    *Replace `https://github.com/your-username/research-assistant-cli.git` with the actual URL of your project's GitHub repository.*
-
+    
 2.  **Create and activate a virtual environment (highly recommended):**
     Using a virtual environment isolates your project's dependencies, preventing conflicts with other Python projects.
     ```bash
