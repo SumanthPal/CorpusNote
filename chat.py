@@ -9,6 +9,7 @@ import chromadb
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import json
+from pathlib import Path
 from config import *
 
 console = Console()
@@ -72,12 +73,16 @@ class ChatInterface:
             return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
     
     def format_context(self, results: dict, show_metadata: bool = True) -> Tuple[str, List[Dict]]:
-        """Format search results into context for LLM"""
+        """Format search results into context for LLM with enhanced image handling"""
         if not results['documents'] or not results['documents'][0]:
             return "", []
         
         context_parts = []
         sources = []
+        
+        # Track content types for better organization
+        text_docs = []
+        image_docs = []
         
         # Process each result
         for i, (doc, metadata, distance) in enumerate(zip(
@@ -88,6 +93,7 @@ class ChatInterface:
             # Extract source info - handle both string and int types
             chunk_index = metadata.get('chunk_index', 0)
             total_chunks = metadata.get('total_chunks', 1)
+            content_type = metadata.get('content_type', 'text')
             
             # Ensure they're integers
             if isinstance(chunk_index, str):
@@ -98,28 +104,59 @@ class ChatInterface:
             source_info = {
                 "document": metadata.get('source', 'Unknown'),
                 "page": metadata.get('page', 'Unknown'),
-                "chunk": chunk_index + 1,  # Add 1 for human-readable numbering
+                "chunk": chunk_index + 1,
                 "total_chunks": total_chunks,
-                "relevance": 1 - distance  # Convert distance to relevance score
+                "relevance": 1 - distance,
+                "content_type": content_type,
+                "file_type": metadata.get('file_type', 'unknown')
             }
+            
+            # Add image-specific metadata if available
+            if content_type == 'image':
+                source_info.update({
+                    "width": metadata.get('width'),
+                    "height": metadata.get('height'),
+                    "format": metadata.get('format')
+                })
+            
             sources.append(source_info)
             
-            # Format context with clear separation
-            context_part = f"""[Document: {source_info['document']} | {source_info['page']} | Chunk {source_info['chunk']}/{source_info['total_chunks']}]
-    {doc}
-    """
-            context_parts.append(context_part)
+            # Format context based on content type
+            if content_type == 'image':
+                # Enhanced formatting for image content
+                image_info = ""
+                if source_info.get('width') and source_info.get('height'):
+                    image_info = f" ({source_info['width']}x{source_info['height']}, {source_info.get('format', 'unknown format')})"
+                
+                context_part = f"""[IMAGE: {source_info['document']}{image_info} | Chunk {source_info['chunk']}/{source_info['total_chunks']}]
+{doc}
+"""
+                image_docs.append(context_part)
+            else:
+                # Standard text document formatting
+                context_part = f"""[DOCUMENT: {source_info['document']} | {source_info['page']} | Chunk {source_info['chunk']}/{source_info['total_chunks']}]
+{doc}
+"""
+                text_docs.append(context_part)
+        
+        # Organize context: images first, then text documents
+        organized_context = []
+        if image_docs:
+            organized_context.extend(image_docs)
+        if text_docs:
+            organized_context.extend(text_docs)
         
         # Join with clear separators
-        full_context = "\n---\n".join(context_parts)
+        full_context = "\n---\n".join(organized_context)
         
         return full_context, sources
 
-
-
-    
     def generate_response(self, query: str, context: str, sources: List[Dict]) -> str:
-        """Generate response using Gemini"""
+        """Generate response using Gemini with enhanced image awareness"""
+        # Analyze sources to understand content types
+        has_images = any(source.get('content_type') == 'image' for source in sources)
+        has_text = any(source.get('content_type') != 'image' for source in sources)
+        
         # Build conversation history context
         history_context = ""
         if self.history:
@@ -127,7 +164,17 @@ class ChatInterface:
             for h in self.history[-4:]:  # Last 2 exchanges
                 history_context += f"{h['role']}: {h['content'][:200]}...\n"
         
-        # Create the prompt
+        # Create enhanced prompt with image awareness
+        image_instructions = ""
+        if has_images:
+            image_instructions = """
+IMPORTANT: Some of the provided context comes from images (diagrams, charts, figures, etc.). 
+- Image content includes both OCR-extracted text and AI-generated descriptions
+- When referencing image content, mention that it comes from an image/diagram/figure
+- Be specific about visual elements described in the context
+- If discussing relationships shown in diagrams, explain them clearly
+"""
+        
         prompt = f"""You are a helpful research assistant. Your task is to answer questions based ONLY on the provided document excerpts.
 
 Important instructions:
@@ -136,6 +183,7 @@ Important instructions:
 3. When referencing information, mention which document it comes from
 4. Be specific and accurate
 5. If multiple documents discuss the topic, synthesize the information
+6. {'IMAGE CONTENT: ' + image_instructions if has_images else ''}
 {history_context}
 
 Context from documents:
@@ -163,17 +211,47 @@ Please provide a comprehensive answer based on the above context:"""
             return f"I encountered an error generating a response: {str(e)}"
     
     def format_sources_table(self, sources: List[Dict]) -> Table:
-        """Create a pretty table of sources"""
+        """Create a pretty table of sources with enhanced image info"""
         table = Table(title="Sources Used", show_lines=True)
         table.add_column("Document", style="cyan", no_wrap=True)
+        table.add_column("Type", style="magenta", width=8)
         table.add_column("Location", style="green")
+        table.add_column("Details", style="blue")
         table.add_column("Relevance", justify="right", style="yellow")
         
         for source in sources:
+            # Determine content type display
+            content_type = source.get('content_type', 'text')
+            file_type = source.get('file_type', '').upper().replace('.', '')
+            
+            if content_type == 'image':
+                type_display = f"📷 {file_type}"
+            else:
+                type_display = f"📄 {file_type}"
+            
+            # Format location
+            if content_type == 'image':
+                location = f"Image (chunk {source['chunk']}/{source['total_chunks']})"
+            else:
+                location = f"{source['page']} (chunk {source['chunk']}/{source['total_chunks']})"
+            
+            # Format details
+            details = ""
+            if content_type == 'image' and source.get('width') and source.get('height'):
+                details = f"{source['width']}×{source['height']}"
+                if source.get('format'):
+                    details += f" {source['format']}"
+            elif content_type != 'image':
+                details = "Text content"
+            
+            # Relevance bar
             relevance_bar = "▰" * int(source['relevance'] * 10) + "▱" * (10 - int(source['relevance'] * 10))
+            
             table.add_row(
                 source['document'],
-                f"{source['page']} (chunk {source['chunk']}/{source['total_chunks']})",
+                type_display,
+                location,
+                details,
                 f"{source['relevance']:.2f} {relevance_bar}"
             )
         
@@ -191,8 +269,16 @@ Please provide a comprehensive answer based on the above context:"""
         # Build filter if specified
         filter_dict = None
         if document_filter:
-            filter_dict = {"source": {"$contains": document_filter}}
-            console.print(f"[dim]Filtering to documents containing: {document_filter}[/dim]")
+            # Handle different filter types
+            if document_filter.lower() in ['image', 'images']:
+                filter_dict = {"content_type": "image"}
+                console.print(f"[dim]Filtering to image content only[/dim]")
+            elif document_filter.lower() in ['text', 'documents']:
+                filter_dict = {"content_type": {"$ne": "image"}}
+                console.print(f"[dim]Filtering to text documents only[/dim]")
+            else:
+                filter_dict = {"source": {"$contains": document_filter}}
+                console.print(f"[dim]Filtering to documents containing: {document_filter}[/dim]")
         
         # Search for relevant chunks
         console.print("[dim]Searching documents...[/dim]")
@@ -240,32 +326,37 @@ Please provide a comprehensive answer based on the above context:"""
         console.print("[yellow]Conversation history cleared[/yellow]")
     
     def interactive_chat(self, document_filter: str = None):
-        """Run interactive chat session"""
+        """Run interactive chat session with enhanced image support"""
         if not self.check_collection():
             return
         
-        # Display welcome message
+        # Display welcome message with image support info
         console.print(Panel.fit(
             "[bold green]Research Assistant[/bold green]\n"
-            "Chat with your indexed documents. I'll help you find and understand information from your research materials.\n\n"
+            "Chat with your indexed documents including images, diagrams, and text. "
+            "I can help you find and understand information from all your research materials.\n\n"
             "Commands:\n"
             "• Type your question and press Enter\n"
             "• 'clear' - Clear conversation history\n"
             "• 'sources' - Toggle source display\n"
             "• 'stats' - Show database statistics\n"
+            "• 'filter images' - Search only image content\n"
+            "• 'filter text' - Search only text documents\n"
+            "• 'clear filter' - Remove content type filters\n"
+            "• 'export' - Export conversation to file\n"
             "• 'exit' or Ctrl+C - Exit chat",
             title="Welcome"
         ))
         
-        # Show current status
-        count = self.collection.count()
-        console.print(f"\n[dim]Connected to database with {count} document chunks[/dim]")
+        # Show current status with content type breakdown
+        self.show_collection_summary()
         
         if document_filter:
             console.print(f"[dim]Filter active: {document_filter}[/dim]")
         
         # Chat settings
         show_sources = True
+        content_filter = None
         
         # Main chat loop
         while True:
@@ -293,12 +384,32 @@ Please provide a comprehensive answer based on the above context:"""
                     self.show_stats()
                     continue
                 
+                elif query.lower() in ['filter images', 'filter image']:
+                    content_filter = 'images'
+                    console.print("[yellow]Now filtering to image content only[/yellow]")
+                    continue
+                
+                elif query.lower() in ['filter text', 'filter documents']:
+                    content_filter = 'text'
+                    console.print("[yellow]Now filtering to text documents only[/yellow]")
+                    continue
+                
+                elif query.lower() in ['clear filter', 'no filter']:
+                    content_filter = None
+                    console.print("[yellow]Content type filter cleared[/yellow]")
+                    continue
+                
+                elif query.lower() == 'export':
+                    self.export_conversation()
+                    continue
+                
                 elif query.strip() == '':
                     continue
                 
-                # Process the query
+                # Process the query with current filters
+                active_filter = content_filter or document_filter
                 with console.status("[bold green]Thinking...[/bold green]"):
-                    result = self.chat(query, document_filter, show_sources)
+                    result = self.chat(query, active_filter, show_sources)
                 
                 # Display response
                 console.print(f"\n[bold green]Assistant:[/bold green]")
@@ -314,8 +425,39 @@ Please provide a comprehensive answer based on the above context:"""
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
     
+    def show_collection_summary(self):
+        """Show brief collection summary with content type breakdown"""
+        if not self.check_collection():
+            return
+        
+        all_data = self.collection.get()
+        total_chunks = len(all_data['ids'])
+        
+        # Count content types
+        content_types = {}
+        documents = set()
+        
+        for metadata in all_data['metadatas']:
+            content_type = metadata.get('content_type', 'text')
+            content_types[content_type] = content_types.get(content_type, 0) + 1
+            documents.add(metadata.get('source', 'Unknown'))
+        
+        # Display summary
+        summary = f"Connected to database: {total_chunks} chunks from {len(documents)} documents"
+        
+        if content_types:
+            type_info = []
+            for ctype, count in content_types.items():
+                if ctype == 'image':
+                    type_info.append(f"{count} image chunks")
+                else:
+                    type_info.append(f"{count} text chunks")
+            summary += f" ({', '.join(type_info)})"
+        
+        console.print(f"[dim]{summary}[/dim]")
+    
     def show_stats(self):
-        """Show database statistics"""
+        """Show database statistics with content type breakdown"""
         if not self.check_collection():
             return
         
@@ -325,34 +467,60 @@ Please provide a comprehensive answer based on the above context:"""
         # Calculate stats
         total_chunks = len(all_data['ids'])
         documents = {}
+        content_types = {'text': 0, 'image': 0}
+        file_types = {}
         
         for metadata in all_data['metadatas']:
             source = metadata.get('source', 'Unknown')
+            content_type = metadata.get('content_type', 'text')
+            file_type = metadata.get('file_type', 'unknown')
+            
+            # Track content types
+            content_types[content_type] = content_types.get(content_type, 0) + 1
+            
+            # Track file types
+            file_types[file_type] = file_types.get(file_type, 0) + 1
+            
+            # Track documents
             if source not in documents:
                 documents[source] = {
                     'chunks': 0,
-                    'type': metadata.get('file_type', 'unknown')
+                    'content_type': content_type,
+                    'file_type': file_type
                 }
             documents[source]['chunks'] += 1
         
-        # Display stats
-        console.print(Panel(
-            f"[bold]Database Statistics[/bold]\n\n"
-            f"Total chunks: {total_chunks}\n"
-            f"Total documents: {len(documents)}\n"
-            f"Average chunks per document: {total_chunks / len(documents):.1f}",
-            title="Stats"
-        ))
+        # Display comprehensive stats
+        stats_text = f"[bold]Database Statistics[/bold]\n\n"
+        stats_text += f"Total chunks: {total_chunks}\n"
+        stats_text += f"Total documents: {len(documents)}\n"
+        stats_text += f"Average chunks per document: {total_chunks / len(documents):.1f}\n\n"
         
-        # Show document list
-        if len(documents) <= 10:
+        # Content type breakdown
+        stats_text += f"[bold]Content Types:[/bold]\n"
+        for ctype, count in content_types.items():
+            percentage = (count / total_chunks) * 100
+            stats_text += f"  {ctype.title()}: {count} chunks ({percentage:.1f}%)\n"
+        
+        # File type breakdown
+        if file_types:
+            stats_text += f"\n[bold]File Types:[/bold]\n"
+            for ftype, count in sorted(file_types.items(), key=lambda x: x[1], reverse=True):
+                stats_text += f"  {ftype}: {count} files\n"
+        
+        console.print(Panel(stats_text, title="Database Statistics"))
+        
+        # Show document list (limited)
+        if len(documents) <= 15:
             console.print("\n[bold]Indexed documents:[/bold]")
             for doc, info in sorted(documents.items()):
-                console.print(f"  • {doc} ({info['chunks']} chunks)")
+                icon = "📷" if info['content_type'] == 'image' else "📄"
+                console.print(f"  {icon} {doc} ({info['chunks']} chunks)")
         else:
-            console.print(f"\n[dim]Showing first 10 of {len(documents)} documents[/dim]")
-            for doc, info in list(sorted(documents.items()))[:10]:
-                console.print(f"  • {doc} ({info['chunks']} chunks)")
+            console.print(f"\n[dim]Showing first 15 of {len(documents)} documents[/dim]")
+            for doc, info in list(sorted(documents.items()))[:15]:
+                icon = "📷" if info['content_type'] == 'image' else "📄"
+                console.print(f"  {icon} {doc} ({info['chunks']} chunks)")
     
     def ask_single(self, question: str, filter_pattern: str = None, show_sources: bool = True) -> None:
         """Single question mode - for CLI non-interactive use"""
@@ -406,7 +574,10 @@ if __name__ == "__main__":
         console.print(f"Response: {result['response'][:200]}...")
         console.print(f"Sources found: {len(result['sources'])}")
         
+        # Test image-specific query
+        console.print("\n[bold]Testing image query...[/bold]")
+        result = chat.chat("Show me any diagrams or images", document_filter="images")
+        console.print(f"Image results: {result['response'][:200]}...")
+        
     except Exception as e:
         console.print(f"[red]Test failed: {e}[/red]")
-
-

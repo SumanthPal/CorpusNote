@@ -10,6 +10,14 @@ from datetime import datetime
 import re
 from typing import List, Dict, Optional, Tuple
 from config import *
+from PIL import Image # pip install Pillow
+import io
+import base64
+import cv2  # pip install opencv-python
+import google.generativeai as genai
+import pytesseract  # pip install pytesseract
+from PIL import Image, ExifTags  # Add ExifTags
+import easyocr  # Add this import
 
 console = Console()
 
@@ -22,6 +30,22 @@ class FileParser:
             name=COLLECTION_NAME,
             metadata={"description": "Research document collection"}
         )
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            self.gemini_model = genai.GenerativeModel(GEMINI_MODEL)
+            console.print("[green]✓ Gemini vision model initialized[/green]")
+        except Exception as e:
+            console.print(f"[red]Failed to initialize Gemini: {e}[/red]")
+            self.gemini_model = None
+        
+        try:
+            self.easyocr_reader = easyocr.Reader(['en'])
+            console.print("[green]✓ EasyOCR initialized[/green]")
+        except Exception as e:
+            console.print(f"[yellow]EasyOCR not available: {e}[/yellow]")
+            self.easyocr_reader = None
+
+        
         console.print(f"[green]✓ Connected to database at {DB_PATH}[/green]")
     
     def _get_file_hash(self, file_path: Path) -> str:
@@ -77,6 +101,8 @@ class FileParser:
             return self._extract_pdf_text(file_path)
         elif suffix in ['.txt', '.md']:
             return self._extract_plain_text(file_path)
+        elif suffix in ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp']:
+            return self._extract_image_content(file_path)
         else:
             raise ValueError(f"Unsupported file type: {suffix}")
     
@@ -143,13 +169,16 @@ class FileParser:
             console.print(f"[red]Error reading text file {file_path.name}: {e}[/red]")
             return ""
     
-    def _chunk_text(self, text: str, file_name: str) -> List[Dict[str, any]]:
+    def _chunk_text(self, text: str, file_name: str, is_image: bool = False) -> List[Dict[str, any]]:
         """
         Smart chunking that preserves context and handles edge cases
         Returns list of chunk dictionaries with text and metadata
         """
         if not text.strip():
             return []
+        
+        if is_image:
+            return self._chunk_image_content(text, file_name)
         
         # Check total text length
         console.print(f"[dim]Text length for {file_name}: {len(text)} characters[/dim]")
@@ -782,8 +811,247 @@ class FileParser:
                 console.print(f"  {name}: {size:.1f} MB")
         
         return stats
+    
+    def _describe_image(self, file_path: Path) -> str:
+        """Generate description of image using Gemini Vision"""
+        if not self.gemini_model:
+            return ""
+        
+        try:
+            # Load and prepare image
+            with Image.open(file_path) as img:
+                # Convert to RGB if needed
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Resize if too large (Gemini has size limits)
+                max_size = 1024
+                if max(img.width, img.height) > max_size:
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                # Convert to bytes
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format='JPEG')
+                img_byte_arr = img_byte_arr.getvalue()
+                
+                # Create prompt for research diagrams
+                prompt = """Analyze this image and provide a detailed description focusing on:
+                1. Type of diagram/chart/figure (flowchart, graph, table, etc.)
+                2. Main concepts, labels, and text visible
+                3. Relationships shown between elements
+                4. Any data, numbers, or measurements
+                5. Overall purpose or message of the image
+                
+                Be thorough but concise, focusing on information that would be useful for research."""
+                
+                # Send to Gemini
+                response = self.gemini_model.generate_content([
+                    prompt,
+                    {"mime_type": "image/jpeg", "data": img_byte_arr}
+                ])
+                
+                return response.text if response.text else ""
+                
+        except Exception as e:
+            console.print(f"[yellow]Failed to describe image {file_path.name}: {e}[/yellow]")
+            return ""
 
-
+    # Image related stuff
+    def _preprocess_image(self, image: any) -> any:
+        """Enhance image for better OCR results"""
+        # FIX: cv1Color should be cvtColor
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)  # Fixed typo
+        
+        denoised = cv2.fastNlMeansDenoising(gray)
+        _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        return thresh
+    
+   
+        
+    def _extract_image_content(self, file_path: Path) -> str:
+        """Extract all content from image file"""
+        if not self._check_image_quality(file_path):
+            console.print(f"[yellow]Skipping low-quality image: {file_path.name}[/yellow]")
+            return ""
+        
+        content_parts = []
+        
+        # Extract text via OCR
+        console.print(f"[dim]Extracting text from {file_path.name}...[/dim]")
+        ocr_text = self._extract_image_text(file_path)
+        if ocr_text.strip():
+            content_parts.append(f"[OCR Text]\n{ocr_text}")
+        
+        # Get image description using Gemini Vision
+        console.print(f"[dim]Analyzing image content...[/dim]")
+        description = self._describe_image(file_path)
+        if description.strip():
+            content_parts.append(f"[Image Description]\n{description}")
+        
+        # Add basic metadata as searchable text
+        try:
+            with Image.open(file_path) as img:
+                meta_info = f"Image dimensions: {img.width}x{img.height}, Format: {img.format}"
+                content_parts.append(f"[Image Info]\n{meta_info}")
+        except:
+            pass
+        
+        final_content = "\n\n".join(content_parts)
+        
+        if not final_content.strip():
+            console.print(f"[yellow]No content extracted from {file_path.name}[/yellow]")
+            return ""
+        
+        console.print(f"[green]Extracted {len(final_content)} characters from {file_path.name}[/green]")
+        return final_content
+    
+    def _extract_image_metadata(self, file_path: Path) -> Dict:
+        """Extract metadata from image"""
+        try:
+            with Image.open(file_path) as img:
+                # Basic info
+                metadata = {
+                    'width': img.width,
+                    'height': img.height,
+                    'format': img.format,
+                    'mode': img.mode,
+                    'file_size': file_path.stat().st_size
+                }
+                
+                # EXIF data
+                if hasattr(img, '_getexif') and img._getexif():
+                    exif = img._getexif()
+                    for tag_id, value in exif.items():
+                        tag = ExifTags.TAGS.get(tag_id, tag_id)
+                        if isinstance(value, str) and len(value) < 100:  # Keep only short text values
+                            metadata[f'exif_{tag}'] = value
+                
+                return metadata
+        except Exception as e:
+            console.print(f"[yellow]Failed to extract metadata from {file_path.name}: {e}[/yellow]")
+            return {}
+    
+    def _chunk_image_content(self, content: str, file_name: str) -> List[Dict[str, any]]:
+        """Special chunking for image content - keep as single chunk"""
+        if not content.strip():
+            return []
+        
+        # For images, create one comprehensive chunk
+        chunk = {
+            'text': content.strip(),
+            'page': 'Image',
+            'chunk_index': 0,
+            'content_type': 'image'
+        }
+        
+        console.print(f"[green]Created 1 image chunk from {file_name}[/green]")
+        return [chunk]
+            
+    def _create_image_metadata(self, file_path: Path, chunk_data: Dict) -> Dict:
+        """Create metadata specific to image files"""
+        base_metadata = {
+            "source": file_path.name,
+            "full_path": str(file_path.absolute()),
+            "file_hash": self._get_file_hash(file_path),
+            "chunk_index": chunk_data.get('chunk_index', 0),
+            "file_size": file_path.stat().st_size,
+            "file_type": file_path.suffix.lower(),
+            "indexed_at": datetime.now().isoformat(),
+            "content_type": "image"
+        }
+        
+        # Add image-specific metadata
+        img_metadata = self._extract_image_metadata(file_path)
+        base_metadata.update(img_metadata)
+        
+        return self._safe_metadata(base_metadata)
+    
+    def _get_dominant_colors(self, img, num_colors=3):
+        """Extract dominant colors from image"""
+        try:
+            # Convert to RGB and resize for faster processing
+            img_rgb = img.convert('RGB')
+            img_small = img_rgb.resize((50, 50))
+            
+            # Get color data
+            colors = img_small.getcolors(maxcolors=256*256*256)
+            if colors:
+                # Sort by frequency and get top colors
+                colors.sort(key=lambda x: x[0], reverse=True)
+                dominant = [f"rgb{color[1]}" for color in colors[:num_colors]]
+                return dominant
+        except Exception:
+            pass
+        return []
+    
+    def _check_image_quality(self, file_path: Path) -> bool:
+        """Check if image is suitable for OCR"""
+        try:
+            with Image.open(file_path) as img:
+                # Skip very small images
+                if img.width < 100 or img.height < 100:
+                    return False
+                
+                # Skip very large images (resize them first)
+                if img.width * img.height > 4000 * 4000:
+                    console.print(f"[yellow]Large image {file_path.name}, may take longer to process[/yellow]")
+                
+                return True
+        except Exception:
+            return False
+        
+    
+        
+    def _extract_image_text(self, file_path: Path) -> str:
+        """Extract text from image using multiple OCR approaches"""
+        try:
+            # Load image
+            image = cv2.imread(str(file_path))
+            if image is None:
+                console.print(f"[red]Could not load image: {file_path}[/red]")
+                return ""
+            
+            # Try multiple preprocessing approaches
+            results = []
+            
+            # 1. Original image
+            if self.easyocr_reader:
+                try:
+                    easyocr_results = self.easyocr_reader.readtext(image)
+                    easyocr_text = ' '.join([result[1] for result in easyocr_results if result[2] > 0.3])
+                    if easyocr_text:
+                        results.append(easyocr_text)
+                except Exception as e:
+                    console.print(f"[yellow]EasyOCR failed: {e}[/yellow]")
+            
+            # 2. Preprocessed image
+            processed_image = self._preprocess_image(image)
+            tesseract_text = pytesseract.image_to_string(processed_image, config='--psm 6')
+            if tesseract_text.strip():
+                results.append(tesseract_text)
+            
+            # 3. Try with different PSM modes for diagrams
+            psm_modes = [3, 4, 6, 8, 11, 12]  # Different page segmentation modes
+            for psm in psm_modes:
+                try:
+                    text = pytesseract.image_to_string(processed_image, config=f'--psm {psm}')
+                    if text.strip() and len(text) > len(tesseract_text):
+                        results.append(text)
+                        break
+                except:
+                    continue
+            
+            # Combine results
+            combined_text = '\n'.join(results) if results else ""
+            return self._clean_text(combined_text)
+            
+        except Exception as e:
+            console.print(f"[red]OCR extraction failed for {file_path.name}: {e}[/red]")
+            return ""
+    
+    
+        
 
 
 if __name__ == "__main__":
