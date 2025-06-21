@@ -1,9 +1,9 @@
 # First time setup
 ./setup.sh
-
+/Users/sumanth/Downloads/OAE-Spec-Full
 # Index your documents
 python main.py index ~/Documents/Research
-python main.py index ~/Documents/Papers --pattern "*atomic*.pdf"
+python main.py index ~/Documents/Research --pattern "*atomic*.pdf"
 
 # Check status
 python main.py status
@@ -20,6 +20,7 @@ python main.py ask "Explain atomic ethernet" --filter "*.pdf"
 # Update with new files
 python main.py update ~/Documents/Research
 
+python main.py update '/Users/sumanth/Library/Mobile Documents/com~apple~CloudDocs/MULLIGANSTEW'                                                                            ─╯
 # Watch for changes
 python main.py watch ~/Documents/Research --interval 300
 
