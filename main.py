@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich import print as rprint
 from typing import Optional
 import sys
+from web_parser import WebParser
 
 from file_parser import FileParser
 from chat import ChatInterface
@@ -24,6 +25,7 @@ app = typer.Typer(
 console = Console()
 parser = FileParser()
 chat_interface = ChatInterface()
+web_parser = WebParser(parser)
 
 # Helper function for pretty headers
 def print_header(text: str):
@@ -68,6 +70,70 @@ def index(
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
+
+@app.command()
+def index_url(
+    url: str = typer.Argument(..., help="URL to index (webpage or GitHub repo)"),
+    max_pages: int = typer.Option(50, "--max-pages", "-m", help="Maximum pages to crawl (for websites)"),
+    same_domain: bool = typer.Option(True, "--same-domain/--any-domain", help="Only crawl same domain"),
+    github_token: Optional[str] = typer.Option(None, "--github-token", "-t", help="GitHub personal access token")
+):
+    """Index a website or GitHub repository"""
+    print_header("Web Indexing")
+    
+    if 'github.com' in url:
+        # GitHub repository
+        console.print(f"[cyan]Detected GitHub repository[/cyan]")
+        stats = web_parser.index_github_repo(url, github_token)
+        
+        console.print(f"\n[bold]GitHub Indexing Complete![/bold]")
+        console.print(f"[green]✓ Indexed: {stats['indexed']} files[/green]")
+        console.print(f"[red]✗ Failed: {stats['failed']} files[/red]")
+        
+    elif url.startswith(('http://', 'https://')):
+        # Regular website
+        if max_pages == 1:
+            # Single page
+            success = web_parser.index_webpage(url)
+            if success:
+                console.print(f"[green]✓ Successfully indexed {url}[/green]")
+            else:
+                console.print(f"[red]✗ Failed to index {url}[/red]")
+                raise typer.Exit(1)
+        else:
+            # Crawl website
+            console.print(f"[cyan]Crawling website (max {max_pages} pages)[/cyan]")
+            stats = web_parser.index_website(url, max_pages, same_domain)
+            
+            console.print(f"\n[bold]Website Indexing Complete![/bold]")
+            console.print(f"[green]✓ Indexed: {stats['indexed']} pages[/green]")
+            console.print(f"[red]✗ Failed: {stats['failed']} pages[/red]")
+    else:
+        console.print(f"[red]Invalid URL. Must start with http:// or https://[/red]")
+        raise typer.Exit(1)
+
+@app.command()
+def index_github(
+    repo: str = typer.Argument(..., help="GitHub repo (format: owner/repo or full URL)"),
+    token: Optional[str] = typer.Option(None, "--token", "-t", help="GitHub personal access token for private repos")
+):
+    """Index a GitHub repository (shorthand command)"""
+    print_header("GitHub Repository Indexing")
+    
+    # Handle different input formats
+    if not repo.startswith('http'):
+        if '/' in repo:
+            repo = f"https://github.com/{repo}"
+        else:
+            console.print("[red]Invalid format. Use: owner/repo or full GitHub URL[/red]")
+            raise typer.Exit(1)
+    
+    stats = web_parser.index_github_repo(repo, token)
+    
+    console.print(f"\n[bold]Indexing Complete![/bold]")
+    console.print(f"[green]✓ Indexed: {stats['indexed']} files[/green]")
+    console.print(f"[red]✗ Failed: {stats['failed']} files[/red]")
+
 
 @app.command()
 def chat(

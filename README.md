@@ -8,7 +8,7 @@ This project is a standalone Command-Line Interface (CLI) application designed t
 ![Example for Daedaelus](/response.png)
 ---
 
-## ✨ Features
+##  Features
 
 * **Intelligent Document Ingestion:**
     * **Flexible Indexing:** Easily index individual files or recursively process entire directories containing your research materials.
@@ -53,7 +53,7 @@ This project is a standalone Command-Line Interface (CLI) application designed t
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 Follow these steps to set up and run the Research Assistant CLI on your local machine.
 

@@ -226,8 +226,13 @@ Please provide a comprehensive answer based on the above context:"""
             
             if content_type == 'image':
                 type_display = f"📷 {file_type}"
+            elif content_type == 'webpage':
+                type_display = f'🌐 WEB'
+            elif content_type in ['github_file', 'github_code', 'github_repo_info']:
+                type_display = f'🐙 GITHUB'
             else:
                 type_display = f"📄 {file_type}"
+            
             
             # Format location
             if content_type == 'image':
