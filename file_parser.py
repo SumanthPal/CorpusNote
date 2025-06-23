@@ -103,6 +103,8 @@ class FileParser:
             return self._extract_plain_text(file_path)
         elif suffix in ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp']:
             return self._extract_image_content(file_path)
+        elif suffix in CODE_EXTENSIONS:
+            return self._extract_code_content(file_path)
         else:
             raise ValueError(f"Unsupported file type: {suffix}")
     
@@ -176,9 +178,13 @@ class FileParser:
         """
         if not text.strip():
             return []
+
+        is_code = any(file_name.endswith(ext) for ext in CODE_EXTENSIONS)
         
         if is_image:
             return self._chunk_image_content(text, file_name)
+        elif is_code:
+            return self._chunk_code(text, file_name)
         
         # Check total text length
         console.print(f"[dim]Text length for {file_name}: {len(text)} characters[/dim]")
@@ -1049,6 +1055,377 @@ class FileParser:
         except Exception as e:
             console.print(f"[red]OCR extraction failed for {file_path.name}: {e}[/red]")
             return ""
+        
+    
+    # ---- CODE PARSING ----
+    def _detect_language(self, file_path: Path) -> str:
+        ext_to_lang = { '.py': 'Python', 
+                       '.js': 'JavaScript', 
+                       '.ts': 'TypeScript', 
+                       '.java': 'Java', 
+                       '.cpp': 'C++', 
+                       '.c': 'C', 
+                       '.h': 'C/C++ Header',
+                       '.hpp': 'C++ Header', 
+                       '.go': 'Go', 
+                       '.rs': 'Rust', 
+                       '.rb': 'Ruby', 
+                       '.php': 'PHP', 
+                       '.swift': 'Swift', 
+                       '.kt': 'Kotlin', 
+                       '.scala': 'Scala', 
+                       '.r': 'R',
+                       '.m': 'MATLAB/Objective-C', 
+                       '.cs': 'C#', 
+                       '.sql': 'SQL', 
+                       '.sh': 'Shell', 
+                       '.bash': 'Bash', 
+                       '.zsh': 'Zsh', 
+                       '.fish': 'Fish', 
+                       '.jsx':'JavaScript/React', 
+                       '.tsx': 'TypeScript/React', 
+                       '.vue': 'Vue', 
+                       '.yaml': 'YAML', 
+                       '.yml': 'YAML', 
+                       '.json': 'JSON', 
+                       '.xml': 'XML',
+                       '.html': 'HTML', 
+                       '.css': 'CSS', 
+                       '.scss': 'SCSS', 
+                       '.less': 'LESS', 
+                       '.dockerfile': 'Dockerfile', 
+                       '.makefile': 'Makefile', 
+                       '.cmake':'CMake', 
+                       '.gradle': 'Gradle' 
+                       }
+        return ext_to_lang.get(file_path.suffix.lower(), 'Unknown')
+    
+    def _extract_code_structure(self, code: str, file_path: Path) -> str:
+        """Extract high-level structure (classes, functions, etc.)"""
+        language = self._detect_language(file_path)
+        structure_parts = []
+        
+        try:
+            if language == 'Python':
+                import re
+                classes = re.findall(r'^class\s+(\w+)', code, re.MULTILINE)
+                functions = re.findall(r'^def\s+(\w+)', code, re.MULTILINE)
+                
+                if classes:
+                    structure_parts.append(f"Classes: {', '.join(classes[:10])}")
+                if functions:
+                    # Filter out common Python methods
+                    filtered_funcs = [f for f in functions if not f.startswith('_') or f in ['__init__', '__str__', '__repr__']]
+                    if filtered_funcs:
+                        structure_parts.append(f"Functions: {', '.join(filtered_funcs[:15])}")
+                        
+            elif language in ['JavaScript', 'TypeScript', 'JavaScript/React', 'TypeScript/React']:
+                import re
+                # ES6 classes and functions
+                classes = re.findall(r'class\s+(\w+)', code)
+                functions = re.findall(r'(?:function\s+(\w+)|const\s+(\w+)\s*=\s*(?:\([^)]*\)|async))', code)
+                functions = [f[0] or f[1] for f in functions if f[0] or f[1]]
+                
+                if classes:
+                    structure_parts.append(f"Classes: {', '.join(classes[:10])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+                    
+            elif language == 'Java':
+                import re
+                classes = re.findall(r'(?:public\s+)?(?:class|interface|enum)\s+(\w+)', code)
+                methods = re.findall(r'(?:public|private|protected)?\s*(?:static\s+)?(?:\w+\s+)+(\w+)\s*\([^)]*\)\s*{', code)
+                
+                if classes:
+                    structure_parts.append(f"Classes/Interfaces: {', '.join(classes[:10])}")
+                if methods:
+                    structure_parts.append(f"Methods: {', '.join(methods[:15])}")
+                    
+            elif language in ['C++', 'C']:
+                import re
+                # Simple function detection
+                functions = re.findall(r'(?:^|\n)\s*(?:\w+\s+)*(\w+)\s*\([^)]*\)\s*{', code, re.MULTILINE)
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+                    
+            elif language == 'Go':
+                import re
+                functions = re.findall(r'func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(', code)
+                types = re.findall(r'type\s+(\w+)\s+(?:struct|interface)', code)
+                
+                if types:
+                    structure_parts.append(f"Types: {', '.join(types[:10])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+            
+            elif language == 'Rust':
+                import re
+                functions = re.findall(r'fn\s+(\w+)', code)
+                structs = re.findall(r'struct\s+(\w+)', code)
+                enums = re.findall(r'enum\s+(\w+)', code)
+                traits = re.findall(r'trait\s+(\w+)', code)
+                
+                if structs or enums:
+                    structure_parts.append(f"Types: {', '.join((structs + enums)[:10])}")
+                if traits:
+                    structure_parts.append(f"Traits: {', '.join(traits[:5])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+            elif language == 'Ruby':
+                import re
+                classes = re.findall(r'class\s+(\w+)', code)
+                modules = re.findall(r'module\s+(\w+)', code)
+                methods = re.findall(r'def\s+(\w+)', code)
+                
+                if classes or modules:
+                    structure_parts.append(f"Classes/Modules: {', '.join((classes + modules)[:10])}")
+                if methods:
+                    structure_parts.append(f"Methods: {', '.join(methods[:15])}")
+
+            elif language == 'PHP':
+                import re
+                classes = re.findall(r'class\s+(\w+)', code)
+                functions = re.findall(r'function\s+(\w+)', code)
+                traits = re.findall(r'trait\s+(\w+)', code)
+                
+                if classes:
+                    structure_parts.append(f"Classes: {', '.join(classes[:10])}")
+                if traits:
+                    structure_parts.append(f"Traits: {', '.join(traits[:5])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+            elif language == 'C#':
+                import re
+                classes = re.findall(r'(?:public\s+|private\s+|internal\s+)?(?:class|interface|struct)\s+(\w+)', code)
+                methods = re.findall(r'(?:public|private|protected|internal)?\s*(?:static\s+)?(?:\w+\s+)+(\w+)\s*\([^)]*\)', code)
+                
+                if classes:
+                    structure_parts.append(f"Types: {', '.join(classes[:10])}")
+                if methods:
+                    # Filter out common methods
+                    filtered = [m for m in methods if m not in ['Main', 'ToString', 'GetHashCode', 'Equals']]
+                    if filtered:
+                        structure_parts.append(f"Methods: {', '.join(filtered[:15])}")
+
+            elif language == 'Swift':
+                import re
+                classes = re.findall(r'(?:class|struct|enum|protocol)\s+(\w+)', code)
+                functions = re.findall(r'func\s+(\w+)', code)
+                
+                if classes:
+                    structure_parts.append(f"Types: {', '.join(classes[:10])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+            elif language == 'Kotlin':
+                import re
+                classes = re.findall(r'(?:class|interface|object|data\s+class)\s+(\w+)', code)
+                functions = re.findall(r'fun\s+(\w+)', code)
+                
+                if classes:
+                    structure_parts.append(f"Types: {', '.join(classes[:10])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+            elif language == 'Scala':
+                import re
+                classes = re.findall(r'(?:class|trait|object|case\s+class)\s+(\w+)', code)
+                functions = re.findall(r'def\s+(\w+)', code)
+                
+                if classes:
+                    structure_parts.append(f"Types: {', '.join(classes[:10])}")
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+            elif language == 'R':
+                import re
+                functions = re.findall(r'(\w+)\s*<-\s*function', code)
+                functions2 = re.findall(r'(\w+)\s*=\s*function', code)
+                
+                all_functions = list(set(functions + functions2))
+                if all_functions:
+                    structure_parts.append(f"Functions: {', '.join(all_functions[:15])}")
+
+            elif language == 'SQL':
+                import re
+                tables = re.findall(r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)', code, re.IGNORECASE)
+                views = re.findall(r'CREATE\s+VIEW\s+(\w+)', code, re.IGNORECASE)
+                procedures = re.findall(r'CREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\s+(\w+)', code, re.IGNORECASE)
+                
+                if tables:
+                    structure_parts.append(f"Tables: {', '.join(tables[:10])}")
+                if views:
+                    structure_parts.append(f"Views: {', '.join(views[:10])}")
+                if procedures:
+                    structure_parts.append(f"Procedures: {', '.join(procedures[:10])}")
+
+            elif language in ['Shell', 'Bash', 'Zsh', 'Fish']:
+                import re
+                functions = re.findall(r'(?:function\s+)?(\w+)\s*\(\)', code)
+                
+                if functions:
+                    structure_parts.append(f"Functions: {', '.join(functions[:15])}")
+
+
+
+                    
+        except Exception as e:
+            console.print(f"[yellow]Could not extract structure from {file_path.name}: {e}[/yellow]")
+        
+        return '; '.join(structure_parts) if structure_parts else ""
+    
+    def _extract_code_content(self, file_path: Path) -> str:
+        """Extract and enrich code file with metadata"""
+        
+        try:
+            code = self._extract_plain_text(file_path)
+            if not code:
+                return ""
+            
+            language = self._detect_language(file_path)
+            lines = code.splitlines()
+            line_count = len(lines)
+            
+            structure = self._extract_code_structure(code, file_path)
+            
+            imports = []
+            if language == 'Python':
+                imports = [line.strip() for line in lines if line.strip().startswith(('import ', 'from '))][:5]
+            elif language in ['JavaScript', 'TypeScript', 'JavaScript/React', 'TypeScript/React']:
+                imports = [line.strip() for line in lines if line.strip().startswith(('import ', 'require('))[:5]]
+            elif language == 'Java':
+                imports = [line.strip() for line in lines if line.strip().startswith('import ')][:5]
+            elif language in ['C++', 'C']:
+                imports = [line.strip() for line in lines if line.strip().startswith('#include')][:5]
+            elif language == 'Go':
+                imports = [line.strip() for line in lines if line.strip().startswith('import ')][:5]
+            elif language == 'Rust':
+                imports = [line.strip() for line in lines if line.strip().startswith('use ')][:5]
+            elif language == 'Ruby':
+                imports = [line.strip() for line in lines if line.strip().startswith('require ')][:5]
+            elif language == 'PHP':
+                imports = [line.strip() for line in lines if line.strip().startswith('use ')][:5]
+            elif language == 'C#':
+                imports = [line.strip() for line in lines if line.strip().startswith('using ')][:5]
+            
+            # TODO:  ADD MORE LANGUAGE SUPPORT
+            
+            content_parts = [
+                f'[Code File: {file_path.name}]',
+                f'[Language: {language}]',
+                f'[Lines: {line_count}]',
+            ]
+
+            if structure:
+                content_parts.append(f'[Structure: {structure}]')
+            
+            if imports:
+                content_parts.append(f'[Key Imports: {", ".join(imports)}]')
+            
+            content_parts.extend(["", "--- CODE ---", code])
+            return "\n".join(content_parts)
+        
+        except Exception as e:
+            console.print(f"[red]Failed to extract code content from {file_path.name}: {e}[/red]")
+            return ""
+        
+    def _chunk_code(self, text: str, file_name: str) -> List[Dict[str, any]]:
+        """Special chunking for code files"""
+        if not text.strip():
+            return []
+        
+        # Extract metadata section and code section
+        lines = text.split('\n')
+        code_start = 0
+        
+        # Find where actual code starts (after metadata)
+        for i, line in enumerate(lines):
+            if line.strip() == "--- CODE ---":
+                code_start = i + 1
+                break
+        
+        metadata_section = '\n'.join(lines[:code_start-1])
+        code_section = '\n'.join(lines[code_start:])
+        
+        # For code files, we'll chunk more conservatively
+        # Try to keep functions/classes together
+        chunks = []
+        
+        # If the file is small enough, keep it as one chunk
+        if len(text) < CHUNK_SIZE * 150:  # ~3000 words
+            chunks.append({
+                'text': text.strip(),
+                'page': 'Code',
+                'chunk_index': 0,
+                'content_type': 'code'
+            })
+            console.print(f"[green]Created 1 code chunk from {file_name}[/green]")
+            return chunks
+        
+        # Otherwise, chunk by logical sections
+        current_chunk = [metadata_section, ""]  # Always include metadata
+        current_size = len(metadata_section.split())
+        
+        code_lines = code_section.split('\n')
+        in_function = False
+        function_depth = 0
+        
+        for line in code_lines:
+            stripped = line.strip()
+            
+            # Simple heuristic to detect function/class boundaries
+            if any(keyword in stripped for keyword in ['def ', 'class ', 'function ', 'func ', 'public ', 'private ']):
+                in_function = True
+                function_depth = 0
+            
+            # Track braces/indentation to know when function ends
+            if in_function:
+                function_depth += line.count('{') - line.count('}')
+                if stripped and not line.startswith((' ', '\t')) and function_depth == 0:
+                    in_function = False
+            
+            # Check if adding this line would exceed chunk size
+            line_words = len(line.split())
+            if current_size + line_words > CHUNK_SIZE and not in_function and current_chunk:
+                # Save current chunk
+                chunk_text = '\n'.join(current_chunk)
+                chunks.append({
+                    'text': chunk_text.strip(),
+                    'page': 'Code',
+                    'chunk_index': len(chunks),
+                    'content_type': 'code'
+                })
+                
+                # Start new chunk with metadata and some overlap
+                current_chunk = [metadata_section, ""]
+                if len(chunks) > 0 and CHUNK_OVERLAP > 0:
+                    # Add last few lines as overlap
+                    overlap_lines = code_lines[max(0, code_lines.index(line) - 10):code_lines.index(line)]
+                    current_chunk.extend(overlap_lines)
+                
+                current_size = len(' '.join(current_chunk).split())
+            
+            current_chunk.append(line)
+            current_size += line_words
+        
+        # Don't forget the last chunk
+        if current_chunk and len(current_chunk) > 2:  # More than just metadata
+            chunk_text = '\n'.join(current_chunk)
+            chunks.append({
+                'text': chunk_text.strip(),
+                'page': 'Code',
+                'chunk_index': len(chunks),
+                'content_type': 'code'
+            })
+        
+        console.print(f"[green]Created {len(chunks)} code chunks from {file_name}[/green]")
+        return chunk_text
+
+        
+
+                
     
     
         
