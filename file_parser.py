@@ -410,7 +410,43 @@ class FileParser:
         except Exception as e:
             console.print(f"[red]Failed to clear database: {e}[/red]")
             return False
-    # Add these methods to the FileParser class in file_parser.py
+    
+    def _find_and_filter_files(self, directory: Path, recursive: bool, pattern: Optional[str] = None) -> List[Path]:
+        """Finds all supported files in a directory and filters them based on config"""
+        
+        console.print('[cyan]Scanning {directory} for supported files...[/cyan]')
+        all_found_files = []
+        for ext in SUPPORTED_EXTENSIONS:
+            search_pattern = f"**/*{ext}" if recursive else f"*{ext}"
+            all_found_files.extend(directory.glob(search_pattern))
+        
+        if pattern:
+            import fnmatch
+            all_found_files = [f for f in all_found_files if fnmatch.fnmatch(f.name, pattern)]
+            
+        filtered_files = []
+        for f in set(all_found_files): # Use set to get unique paths
+            if not f.is_file():
+                continue
+
+            relative_path = f.relative_to(directory)
+            
+            # 1. Check against ignored directories
+            if any(part in IGNORE_DIRECTORIES for part in relative_path.parts):
+                continue
+            
+            # 2. Check against ignored file patterns
+            if any(fnmatch.fnmatch(f.name, glob) for glob in IGNORE_FILES):
+                continue
+            
+            # 3. Check for hidden files and iCloud placeholders
+            if f.name.startswith('.') or f.name.endswith('.icloud'):
+                continue
+            
+            filtered_files.append(f)
+            
+        console.print(f"[green]Found {len(filtered_files)} files to process[/green]")
+        return sorted(filtered_files)
 
     def index_directory(self, directory: Path, recursive: bool = True, 
                     force: bool = False, pattern: str = None) -> Dict[str, int]:
@@ -435,38 +471,11 @@ class FileParser:
         console.print(f"[cyan]Scanning {directory}...[/cyan]")
         files = []
         
+        files = self._find_and_filter_files(directory, recursive, pattern)
+
         # Handle iCloud specific paths
         if "Mobile Documents" in str(directory) or "iCloud" in str(directory):
             console.print("[dim]Detected iCloud directory - skipping .icloud placeholder files[/dim]")
-        
-        for ext in SUPPORTED_EXTENSIONS:
-            if recursive:
-                search_pattern = f"**/*{ext}"
-            else:
-                search_pattern = f"*{ext}"
-            
-            found_files = list(directory.glob(search_pattern))
-            
-            # Apply additional pattern filter if specified
-            if pattern:
-                import fnmatch
-                found_files = [f for f in found_files if fnmatch.fnmatch(f.name, pattern)]
-            
-            files.extend(found_files)
-        
-        # Remove duplicates, hidden files, and iCloud placeholders
-        files = sorted(set(f for f in files 
-                        if not f.name.startswith('.') 
-                        and not f.name.endswith('.icloud')
-                        and f.is_file()))
-        
-        if not files:
-            console.print("[yellow]No supported files found[/yellow]")
-            if pattern:
-                console.print(f"[dim]Pattern filter: {pattern}[/dim]")
-            return {"indexed": 0, "skipped": 0, "failed": 0}
-        
-        console.print(f"[green]Found {len(files)} supported files[/green]")
         
         # Group files by type for summary
         file_types = {}
@@ -650,13 +659,14 @@ class FileParser:
         
         # Get all currently indexed files
         all_data = self.collection.get()
-        indexed_files = {}
+        indexed_files = {
+            md.get('full_path'): md.get('file_hash')
+            for md in all_data['metadatas']
+            if md.get('full_path') and md.get('file_hash')
+        }
         
-        for metadata in all_data['metadatas']:
-            full_path = metadata.get('full_path')
-            file_hash = metadata.get('file_hash')
-            if full_path and file_hash:
-                indexed_files[full_path] = file_hash
+        current_files_on_disk = self._find_and_filter_files(directory, recursive)
+
         
         # Find all files in directory
         files = []
