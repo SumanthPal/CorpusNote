@@ -80,8 +80,8 @@ source env/bin/activate  # Linux/macOS
 # or
 env\Scripts\activate     # Windows
 ```
-# Now you can use corpus
 ```
+# Now you can use corpus!
 corpus --help
 corpus config setup
 
