@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import json
 from pathlib import Path
-from config import *
+from .config import *
 import subprocess
 import shutil
 

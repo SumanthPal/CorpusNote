@@ -11,7 +11,7 @@ from urllib.parse import urlparse, urljoin
 from github import Github
 import base64
 import markdown2
-from config import *
+from .config import *
 
 console = Console()
 

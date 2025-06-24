@@ -10,7 +10,7 @@ from datetime import datetime
 import re
 from typing import List, Dict, Optional, Tuple
 from collections import Counter
-from config import *
+from .config import *
 from PIL import Image # pip install Pillow
 import io
 import base64
@@ -285,8 +285,7 @@ class FileParser:
     
     def index_file(self, file_path: Path, force: bool = False) -> Tuple[bool, str]:
         """
-        Index a single file
-        Returns: (success, message)
+        Enhanced index_file method with iCloud support
         """
         try:
             # Validate file
@@ -295,6 +294,19 @@ class FileParser:
             
             if not file_path.is_file():
                 return False, f"Not a file: {file_path}"
+            
+            # Check if this is an iCloud placeholder
+            if file_path.name.endswith('.icloud'):
+                # Try to download the actual file
+                actual_file = self._download_icloud_file(file_path)
+                if actual_file:
+                    file_path = actual_file
+                else:
+                    return False, f"Could not download iCloud file: {file_path.name}"
+            
+            # Check file accessibility
+            if not os.access(file_path, os.R_OK):
+                return False, f"Cannot read file (permission denied): {file_path.name}"
             
             if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 return False, f"Unsupported file type: {file_path.suffix}"
@@ -330,14 +342,14 @@ class FileParser:
                     "source": file_path.name,
                     "full_path": str(file_path.absolute()),
                     "file_hash": file_hash,
-                    "chunk_index": i,  # Keep as int
-                    "total_chunks": len(chunks),  # Keep as int
+                    "chunk_index": i,
+                    "total_chunks": len(chunks),
                     "page": chunk.get('page', 'Unknown'),
-                    "file_size": file_path.stat().st_size,  # Keep as int
+                    "file_size": file_path.stat().st_size,
                     "file_type": file_path.suffix.lower(),
-                    "indexed_at": datetime.now().isoformat()
+                    "indexed_at": datetime.now().isoformat(),
+                    "from_icloud": self._is_icloud_directory(file_path.parent)
                 }
-                # Ensure all metadata is safe
                 metadatas.append(self._safe_metadata(metadata))
 
             # Add to collection
@@ -356,7 +368,7 @@ class FileParser:
         except Exception as e:
             console.print(f"[red]Exception details: {type(e).__name__}: {str(e)}[/red]")
             return False, f"Failed to index {file_path.name}: {str(e)}"
-    
+        
     def get_stats(self) -> Dict:
         """Get detailed database statistics"""
         all_data = self.collection.get()
@@ -569,11 +581,15 @@ class FileParser:
 
     def _find_and_filter_files(self, directory: Path, recursive: bool, pattern: Optional[str] = None) -> List[Path]:
         """
-        Optimized file discovery with threading and efficient filtering
-        Finds all supported files in a directory and filters them based on config
+        Enhanced file discovery with iCloud support and efficient filtering
         """
         import fnmatch
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        is_icloud_dir = self._is_icloud_directory(directory)
+        if is_icloud_dir:
+            console.print(f'[cyan]Detected iCloud directory: {directory}[/cyan]')
+            console.print(f'[dim]Will attempt to download placeholder files automatically[/dim]')
         
         console.print(f'[cyan]Scanning {directory} for supported files...[/cyan]')
         
@@ -583,17 +599,38 @@ class FileParser:
         supported_exts_set = set(SUPPORTED_EXTENSIONS) if 'SUPPORTED_EXTENSIONS' in globals() else {'.pdf', '.txt', '.md', '.doc', '.docx'}
         
         def find_files_for_extension(ext: str) -> List[Path]:
-            """Find files for a specific extension using glob"""
+            """Find files for a specific extension using glob with iCloud handling"""
             try:
                 search_pattern = f"**/*{ext}" if recursive else f"*{ext}"
-                return list(directory.glob(search_pattern))
-            except (OSError, PermissionError):
+                found_files = list(directory.glob(search_pattern))
+                
+                # If this is an iCloud directory, also look for .icloud versions
+                if is_icloud_dir:
+                    icloud_pattern = f"**/.*.{ext.lstrip('.')}.icloud" if recursive else f".*.{ext.lstrip('.')}.icloud"
+                    icloud_files = list(directory.glob(icloud_pattern))
+                    
+                    # Try to download iCloud placeholder files
+                    for icloud_file in icloud_files:
+                        actual_file = self._download_icloud_file(icloud_file)
+                        if actual_file and actual_file not in found_files:
+                            found_files.append(actual_file)
+                
+                return found_files
+            except (OSError, PermissionError) as e:
+                console.print(f"[yellow]Permission denied accessing files with extension {ext}: {e}[/yellow]")
                 return []
         
         def is_file_ignored(file_path: Path, rel_path: Path) -> bool:
-            """Fast file filtering check"""
+            """Enhanced file filtering check with iCloud awareness"""
+            # Skip iCloud placeholder files (we handle them separately)
+            if file_path.name.endswith('.icloud'):
+                return True
+            
             # Quick checks first (most common cases)
-                        # Check ignored directories (any part of path)
+            if file_path.name.startswith('.') and not file_path.name.endswith('.icloud'):
+                return True
+            
+            # Check ignored directories (any part of path)
             if ignore_dirs_set and any(part in ignore_dirs_set for part in rel_path.parts):
                 return True
             
@@ -603,7 +640,14 @@ class FileParser:
             
             return False
         
-        # Step 1: Parallel file discovery by extension
+        def safe_file_access(file_path: Path) -> bool:
+            """Safely check if file can be accessed"""
+            try:
+                return file_path.is_file() and os.access(file_path, os.R_OK)
+            except (OSError, PermissionError):
+                return False
+        
+        # Step 1: Parallel file discovery by extension with better error handling
         all_found_files = []
         
         # Use threading for file discovery if we have many extensions
@@ -615,29 +659,36 @@ class FileParser:
                 }
                 
                 for future in as_completed(future_to_ext):
+                    ext = future_to_ext[future]
                     try:
                         files_for_ext = future.result()
                         all_found_files.extend(files_for_ext)
-                    except Exception:
-                        continue  # Skip extensions that cause errors
+                    except Exception as e:
+                        console.print(f"[yellow]Error finding {ext} files: {e}[/yellow]")
+                        continue
         else:
             # Sequential for small number of extensions
             for ext in supported_exts_set:
-                all_found_files.extend(find_files_for_extension(ext))
+                try:
+                    all_found_files.extend(find_files_for_extension(ext))
+                except Exception as e:
+                    console.print(f"[yellow]Error finding {ext} files: {e}[/yellow]")
+                    continue
         
         # Step 2: Apply user pattern filter early if specified
         if pattern:
             all_found_files = [f for f in all_found_files if fnmatch.fnmatch(f.name, pattern)]
         
-        # Step 3: Parallel filtering of found files
+        # Step 3: Enhanced filtering with iCloud awareness
         unique_files = list(set(all_found_files))  # Remove duplicates efficiently
         
         def filter_file_batch(file_batch: List[Path]) -> List[Path]:
-            """Filter a batch of files"""
+            """Filter a batch of files with enhanced error handling"""
             filtered = []
             for f in file_batch:
                 try:
-                    if not f.is_file():
+                    # Enhanced file accessibility check
+                    if not safe_file_access(f):
                         continue
                     
                     relative_path = f.relative_to(directory)
@@ -645,13 +696,14 @@ class FileParser:
                     if not is_file_ignored(f, relative_path):
                         filtered.append(f)
                         
-                except (OSError, ValueError):
-                    continue  # Skip files that cause path errors
+                except (OSError, ValueError, PermissionError) as e:
+                    console.print(f"[yellow]Skipping inaccessible file {f.name}: {e}[/yellow]")
+                    continue
             
             return filtered
         
         # Process files in batches for better performance
-        batch_size = max(100, len(unique_files) // 8)  # Optimal batch size
+        batch_size = max(100, len(unique_files) // 8)
         file_batches = [unique_files[i:i + batch_size] for i in range(0, len(unique_files), batch_size)]
         
         filtered_files = []
@@ -665,7 +717,8 @@ class FileParser:
                     try:
                         batch_result = future.result()
                         filtered_files.extend(batch_result)
-                    except Exception:
+                    except Exception as e:
+                        console.print(f"[yellow]Error in file filtering batch: {e}[/yellow]")
                         continue
         else:
             # Sequential for small file sets
@@ -675,7 +728,15 @@ class FileParser:
         # Sort for consistent processing order
         final_files = sorted(filtered_files)
         
-        console.print(f"[green]Found {len(final_files)} files to process[/green]")
+        console.print(f"[green]Found {len(final_files)} accessible files to process[/green]")
+        
+        if is_icloud_dir and len(final_files) == 0:
+            console.print("[yellow]No files found in iCloud directory. This could mean:[/yellow]")
+            console.print("[dim]  • Files are not downloaded locally[/dim]")
+            console.print("[dim]  • iCloud sync is in progress[/dim]")
+            console.print("[dim]  • Permission issues with iCloud directory[/dim]")
+            console.print("[dim]  • Try opening files manually in Finder to trigger download[/dim]")
+        
         return final_files
 
     def search_by_filename(self, pattern: str) -> List[str]:
@@ -1020,7 +1081,7 @@ class FileParser:
 
     def analyze_directory(self, directory: Path) -> Dict:
         """
-        Analyze directory without indexing - useful for planning
+        Enhanced directory analysis with iCloud awareness
         """
         directory = Path(directory).expanduser().resolve()
         
@@ -1028,7 +1089,11 @@ class FileParser:
             console.print(f"[red]Directory not found: {directory}[/red]")
             return {"error": "Directory not found"}
         
+        is_icloud_dir = self._is_icloud_directory(directory)
+        
         console.print(f"[cyan]Analyzing {directory}...[/cyan]")
+        if is_icloud_dir:
+            console.print("[cyan]iCloud directory detected - analyzing available files[/cyan]")
         
         # Gather statistics
         stats = {
@@ -1038,66 +1103,124 @@ class FileParser:
             "by_type": {},
             "by_folder": {},
             "largest_files": [],
-            "icloud_placeholders": 0
+            "icloud_placeholders": 0,
+            "icloud_downloaded": 0,
+            "permission_errors": 0,
+            "is_icloud_directory": is_icloud_dir
         }
         
-        # Find all files
-        all_files = list(directory.rglob("*"))
-        stats["total_files"] = len([f for f in all_files if f.is_file()])
-        
-        supported_files = []
-        for ext in SUPPORTED_EXTENSIONS:
-            files = list(directory.rglob(f"*{ext}"))
-            for f in files:
-                if f.is_file() and not f.name.startswith('.'):
-                    if f.name.endswith('.icloud'):
-                        stats["icloud_placeholders"] += 1
-                    else:
-                        supported_files.append(f)
+        try:
+            # Find all files with enhanced error handling
+            all_files = []
+            try:
+                all_files = list(directory.rglob("*"))
+            except PermissionError as e:
+                console.print(f"[red]Permission denied accessing directory: {e}[/red]")
+                return {"error": f"Permission denied: {e}"}
+            
+            # Filter to only actual files
+            file_paths = []
+            for f in all_files:
+                try:
+                    if f.is_file():
+                        file_paths.append(f)
+                except (OSError, PermissionError):
+                    stats["permission_errors"] += 1
+                    continue
+            
+            stats["total_files"] = len(file_paths)
+            
+            supported_files = []
+            for ext in SUPPORTED_EXTENSIONS:
+                try:
+                    # Look for regular files
+                    files = [f for f in file_paths if f.suffix.lower() == ext and not f.name.startswith('.')]
+                    
+                    # Look for iCloud placeholders if in iCloud directory
+                    if is_icloud_dir:
+                        icloud_files = [f for f in file_paths if f.name.endswith(f'{ext}.icloud')]
+                        stats["icloud_placeholders"] += len(icloud_files)
                         
-                        # Count by type
-                        stats["by_type"][ext] = stats["by_type"].get(ext, 0) + 1
-                        
-                        # Count by folder
-                        folder = f.parent.name
-                        stats["by_folder"][folder] = stats["by_folder"].get(folder, 0) + 1
-                        
-                        # Track size
-                        size_mb = f.stat().st_size / (1024 * 1024)
-                        stats["total_size_mb"] += size_mb
-                        
-                        # Track largest files
-                        stats["largest_files"].append((f.name, size_mb))
-        
-        stats["supported_files"] = len(supported_files)
-        stats["largest_files"].sort(key=lambda x: x[1], reverse=True)
-        stats["largest_files"] = stats["largest_files"][:10]  # Top 10
-        
-        # Display analysis
-        console.print(f"\n[bold]Directory Analysis:[/bold]")
-        console.print(f"Total files: {stats['total_files']}")
-        console.print(f"Supported files: {stats['supported_files']}")
-        console.print(f"Total size: {stats['total_size_mb']:.1f} MB")
-        
-        if stats["icloud_placeholders"] > 0:
-            console.print(f"[yellow]iCloud placeholders: {stats['icloud_placeholders']} (not downloaded)[/yellow]")
-        
-        if stats["by_type"]:
-            console.print("\n[bold]Files by type:[/bold]")
-            for ext, count in sorted(stats["by_type"].items()):
-                console.print(f"  {ext}: {count}")
-        
-        if len(stats["by_folder"]) > 1:
-            console.print("\n[bold]Top folders:[/bold]")
-            for folder, count in sorted(stats["by_folder"].items(), key=lambda x: x[1], reverse=True)[:5]:
-                console.print(f"  {folder}: {count} files")
-        
-        if stats["largest_files"]:
-            console.print("\n[bold]Largest files:[/bold]")
-            for name, size in stats["largest_files"][:5]:
-                console.print(f"  {name}: {size:.1f} MB")
-        
-        return stats
+                        # Try to download some iCloud files for analysis
+                        for icloud_file in icloud_files[:5]:  # Limit to first 5 to avoid long delays
+                            actual_file = self._download_icloud_file(icloud_file)
+                            if actual_file:
+                                files.append(actual_file)
+                                stats["icloud_downloaded"] += 1
+                    
+                    for f in files:
+                        try:
+                            if os.access(f, os.R_OK):  # Check if readable
+                                supported_files.append(f)
+                                
+                                # Count by type
+                                stats["by_type"][ext] = stats["by_type"].get(ext, 0) + 1
+                                
+                                # Count by folder
+                                folder = f.parent.name
+                                stats["by_folder"][folder] = stats["by_folder"].get(folder, 0) + 1
+                                
+                                # Track size
+                                size_mb = f.stat().st_size / (1024 * 1024)
+                                stats["total_size_mb"] += size_mb
+                                
+                                # Track largest files
+                                stats["largest_files"].append((f.name, size_mb))
+                        except (OSError, PermissionError):
+                            stats["permission_errors"] += 1
+                            continue
+                            
+                except Exception as e:
+                    console.print(f"[yellow]Error processing {ext} files: {e}[/yellow]")
+                    continue
+            
+            stats["supported_files"] = len(supported_files)
+            stats["largest_files"].sort(key=lambda x: x[1], reverse=True)
+            stats["largest_files"] = stats["largest_files"][:10]  # Top 10
+            
+            # Display analysis
+            console.print(f"\n[bold]Directory Analysis:[/bold]")
+            if is_icloud_dir:
+                console.print(f"[cyan]iCloud Directory: {directory}[/cyan]")
+            console.print(f"Total files: {stats['total_files']}")
+            console.print(f"Supported files: {stats['supported_files']}")
+            console.print(f"Total size: {stats['total_size_mb']:.1f} MB")
+            
+            if stats["permission_errors"] > 0:
+                console.print(f"[yellow]Files with permission errors: {stats['permission_errors']}[/yellow]")
+            
+            if stats["icloud_placeholders"] > 0:
+                console.print(f"[yellow]iCloud placeholders found: {stats['icloud_placeholders']}[/yellow]")
+                console.print(f"[green]Successfully downloaded: {stats['icloud_downloaded']}/{min(5, stats['icloud_placeholders'])} (limited sample)[/green]")
+            
+            if stats["by_type"]:
+                console.print("\n[bold]Files by type:[/bold]")
+                for ext, count in sorted(stats["by_type"].items()):
+                    console.print(f"  {ext}: {count}")
+            
+            if len(stats["by_folder"]) > 1:
+                console.print("\n[bold]Top folders:[/bold]")
+                for folder, count in sorted(stats["by_folder"].items(), key=lambda x: x[1], reverse=True)[:5]:
+                    console.print(f"  {folder}: {count} files")
+            
+            if stats["largest_files"]:
+                console.print("\n[bold]Largest files:[/bold]")
+                for name, size in stats["largest_files"][:5]:
+                    console.print(f"  {name}: {size:.1f} MB")
+            
+            if is_icloud_dir:
+                console.print("\n[bold cyan]iCloud Tips:[/bold cyan]")
+                console.print("[dim]• Files may need to be downloaded before indexing[/dim]")
+                console.print("[dim]• Open files in Finder to trigger manual download[/dim]")
+                console.print("[dim]• Large files may take time to download[/dim]")
+                console.print("[dim]• Check iCloud storage and network connection[/dim]")
+            
+            return stats
+            
+        except Exception as e:
+            console.print(f"[red]Error analyzing directory: {e}[/red]")
+            return {"error": str(e)}
+
     
     def _describe_image(self, file_path: Path) -> str:
         """Generate description of image using Gemini Vision"""
@@ -1234,6 +1357,71 @@ class FileParser:
         
         console.print(f"[green]Created 1 image chunk from {file_name}[/green]")
         return [chunk]
+    
+    
+    def _is_icloud_directory(self, directory: Path) -> bool:
+        """Check if directory is an iCloud directory"""
+        dir_str = str(directory).lower()
+        return any(indicator in dir_str for indicator in [
+            'mobile documents',
+            'icloud',
+            'com~apple~clouddocs',
+            'library/mobile documents'
+        ])
+    
+    def _download_icloud_file(self, icloud_path: Path) -> Optional[Path]:
+        """
+        Download an iCloud placeholder file
+        Returns the actual file path if successful, None otherwise
+        """
+        try:
+            # Get the original filename by removing .icloud extension
+            original_name = icloud_path.name
+            if original_name.startswith('.') and original_name.endswith('.icloud'):
+                # Remove leading dot and .icloud extension
+                original_name = original_name[1:-7]  # Remove '.' and '.icloud'
+            
+            actual_file_path = icloud_path.parent / original_name
+            
+            # Check if file is already downloaded
+            if actual_file_path.exists():
+                return actual_file_path
+            
+            console.print(f"[cyan]Downloading iCloud file: {original_name}[/cyan]")
+            
+            # Method 1: Try using macOS brctl command (if available)
+            try:
+                result = subprocess.run([
+                    'brctl', 'download', str(icloud_path)
+                ], capture_output=True, text=True, timeout=30)
+                
+                if result.returncode == 0 and actual_file_path.exists():
+                    console.print(f"[green]✓ Downloaded: {original_name}[/green]")
+                    return actual_file_path
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                pass
+            
+            # Method 2: Try opening the file to trigger download
+            try:
+                with open(icloud_path, 'rb') as f:
+                    f.read(1)  # Just read one byte to trigger download
+                
+                # Wait a bit and check if the actual file now exists
+                import time
+                for _ in range(10):  # Wait up to 10 seconds
+                    if actual_file_path.exists():
+                        console.print(f"[green]✓ Downloaded: {original_name}[/green]")
+                        return actual_file_path
+                    time.sleep(1)
+            except Exception:
+                pass
+            
+            console.print(f"[yellow]Could not download iCloud file: {original_name}[/yellow]")
+            return None
+            
+        except Exception as e:
+            console.print(f"[red]Error downloading iCloud file {icloud_path.name}: {e}[/red]")
+            return None
             
     def _create_image_metadata(self, file_path: Path, chunk_data: Dict) -> Dict:
         """Create metadata specific to image files"""

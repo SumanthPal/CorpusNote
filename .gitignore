@@ -1,5 +1,139 @@
-env/
-research.db/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+env/
+venv/
+ENV/
+VENV/
+.venv
+.env
+
+# Corpus-specific
+research.db
+research.db-journal
+*.db
+*.db-journal
 diagrams/
+exports/
+.corpus/
+chroma_db/
+corpus_cli.egg-info/
+dist/
+build/
+
+# Configuration
 config.py
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+!config.example.py
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.pid
+*.seed
+*.pid.lock
+logs/
+temp/
+tmp/
+
+# Testing
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.hypothesis/
+*.cover
+coverage.xml
+*.py,cover
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# Package files
+*.egg
+*.whl
+
+# Secrets and API keys
+*_api_key*
+*_secret*
+secrets/
+credentials/
+
+# Data files (add more extensions as needed)
+*.pdf
+*.docx
+*.xlsx
+*.csv
+data/
+documents/
+indexed_docs/
+
+# Backup files
+*.bak
+*.backup
+*~
+*.orig
+
+# ChromaDB specific
+chroma/
+persist/
+*.chroma
+
+# Cache
+.cache/
+cache/
+
+# Development
+.python-version
+.ruby-version
+node_modules/
+
+# Generated files
+*.generated
+output/
+
+# Local development
+local/
+scratch/
+playground/
