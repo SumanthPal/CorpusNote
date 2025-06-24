@@ -1,5 +1,5 @@
 env/
 research.db/
 __pycache__/
-
+diagrams/
 config.py

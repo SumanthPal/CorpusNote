@@ -3,12 +3,13 @@ import chromadb
 from pathlib import Path
 from pypdf import PdfReader
 from rich.console import Console
-from rich.progress import track, Progress, SpinnerColumn, TextColumn
+from rich.progress import track, Progress, SpinnerColumn, TextColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn, BarColumn
 from rich.table import Table
 import hashlib
 from datetime import datetime
 import re
 from typing import List, Dict, Optional, Tuple
+from collections import Counter
 from config import *
 from PIL import Image # pip install Pillow
 import io
@@ -18,6 +19,9 @@ import google.generativeai as genai
 import pytesseract  # pip install pytesseract
 from PIL import Image, ExifTags  # Add ExifTags
 import easyocr  # Add this import
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 console = Console()
 
@@ -413,53 +417,18 @@ class FileParser:
             console.print(f"[red]Failed to clear database: {e}[/red]")
             return False
     
-    def _find_and_filter_files(self, directory: Path, recursive: bool, pattern: Optional[str] = None) -> List[Path]:
-        """Finds all supported files in a directory and filters them based on config"""
-        
-        console.print('[cyan]Scanning {directory} for supported files...[/cyan]')
-        all_found_files = []
-        for ext in SUPPORTED_EXTENSIONS:
-            search_pattern = f"**/*{ext}" if recursive else f"*{ext}"
-            all_found_files.extend(directory.glob(search_pattern))
-        
-        if pattern:
-            import fnmatch
-            all_found_files = [f for f in all_found_files if fnmatch.fnmatch(f.name, pattern)]
-            
-        filtered_files = []
-        for f in set(all_found_files): # Use set to get unique paths
-            if not f.is_file():
-                continue
-
-            relative_path = f.relative_to(directory)
-            
-            # 1. Check against ignored directories
-            if any(part in IGNORE_DIRECTORIES for part in relative_path.parts):
-                continue
-            
-            # 2. Check against ignored file patterns
-            if any(fnmatch.fnmatch(f.name, glob) for glob in IGNORE_FILES):
-                continue
-            
-            # 3. Check for hidden files and iCloud placeholders
-            if f.name.startswith('.') or f.name.endswith('.icloud'):
-                continue
-            
-            filtered_files.append(f)
-            
-        console.print(f"[green]Found {len(filtered_files)} files to process[/green]")
-        return sorted(filtered_files)
-
     def index_directory(self, directory: Path, recursive: bool = True, 
-                    force: bool = False, pattern: str = None) -> Dict[str, int]:
+                    force: bool = False, pattern: str = None, 
+                    max_workers: Optional[int] = None) -> Dict[str, int]:
         """
-        Index all supported files in directory
+        Index all supported files in directory using multi-threading for optimal performance
         
         Args:
             directory: Path to directory
             recursive: Whether to search subdirectories
             force: Re-index already indexed files
             pattern: Optional filename pattern to match (e.g., "*.pdf" or "*atomic*")
+            max_workers: Number of threads (defaults to optimal CPU count)
         """
         directory = Path(directory).expanduser().resolve()
         
@@ -469,69 +438,245 @@ class FileParser:
         if not directory.is_dir():
             raise ValueError(f"Not a directory: {directory}")
         
-        # Find all supported files
-        console.print(f"[cyan]Scanning {directory}...[/cyan]")
-        files = []
+        # Optimize thread count based on I/O vs CPU bound operations
+        if max_workers is None:
+            max_workers = min(32, (os.cpu_count() or 1) * 4)  # I/O bound, so more threads
         
+        start_time = time.time()
+        
+        # Find all supported files (optimized)
+        console.print(f"[cyan]Scanning {directory} with {max_workers} workers...[/cyan]")
         files = self._find_and_filter_files(directory, recursive, pattern)
-
+        
+        if not files:
+            console.print("[yellow]No files found to index[/yellow]")
+            return {"indexed": 0, "skipped": 0, "failed": 0}
+        
         # Handle iCloud specific paths
         if "Mobile Documents" in str(directory) or "iCloud" in str(directory):
             console.print("[dim]Detected iCloud directory - skipping .icloud placeholder files[/dim]")
         
-        # Group files by type for summary
-        file_types = {}
-        for f in files:
-            ext = f.suffix.lower()
-            file_types[ext] = file_types.get(ext, 0) + 1
+        # Pre-compute file type statistics (optimized with Counter)
+        file_types = Counter(f.suffix.lower() for f in files)
         
         console.print("[dim]File types found:[/dim]")
-        for ext, count in file_types.items():
+        for ext, count in sorted(file_types.items()):
             console.print(f"[dim]  {ext}: {count} files[/dim]")
         
-        # Process files with progress bar
+        # Thread-safe statistics tracking
+        stats_lock = Lock()
         stats = {"indexed": 0, "skipped": 0, "failed": 0}
         failed_files = []
         
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            
-            task = progress.add_task(f"Indexing {len(files)} files...", total=len(files))
-            
-            for file_path in files:
-                # Update progress description
-                progress.update(task, description=f"Processing: {file_path.name}")
-                
+        def process_file_batch(file_path: Path) -> Tuple[bool, str, str]:
+            """Process a single file and return result"""
+            try:
                 success, message = self.index_file(file_path, force=force)
-                
+                return success, message, file_path.name
+            except Exception as e:
+                return False, str(e), file_path.name
+        
+        def update_stats(success: bool, message: str, filename: str):
+            """Thread-safe statistics update"""
+            with stats_lock:
                 if success:
                     stats["indexed"] += 1
                 elif "Already indexed" in message:
                     stats["skipped"] += 1
                 else:
                     stats["failed"] += 1
-                    failed_files.append((file_path.name, message))
-                
-                progress.advance(task)
+                    failed_files.append((filename, message))
         
-        # Summary report
+        # Process files with ThreadPoolExecutor and optimized progress tracking
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            TransferSpeedColumn(),
+            console=console
+        ) as progress:
+            
+            task = progress.add_task(f"Indexing {len(files)} files...", total=len(files))
+            completed = 0
+            
+            # Batch processing for better performance
+            batch_size = max(1, len(files) // (max_workers * 4))  # Optimal batch size
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_file = {
+                    executor.submit(process_file_batch, file_path): file_path 
+                    for file_path in files
+                }
+                
+                # Process completed tasks as they finish
+                for future in as_completed(future_to_file):
+                    file_path = future_to_file[future]
+                    
+                    try:
+                        success, message, filename = future.result()
+                        update_stats(success, message, filename)
+                        
+                        completed += 1
+                        
+                        # Update progress (throttled for performance)
+                        if completed % max(1, len(files) // 100) == 0 or completed == len(files):
+                            progress.update(
+                                task, 
+                                advance=max(1, len(files) // 100) if completed < len(files) else len(files) - progress.tasks[0].completed,
+                                description=f"Processing: {filename} ({completed}/{len(files)})"
+                            )
+                            
+                    except Exception as e:
+                        update_stats(False, str(e), file_path.name)
+                        completed += 1
+        
+        # Calculate performance metrics
+        elapsed_time = time.time() - start_time
+        files_per_second = len(files) / elapsed_time if elapsed_time > 0 else 0
+        
+        # Enhanced summary report
         console.print("\n[bold green]Indexing Complete![/bold green]")
         console.print(f"✓ Indexed: {stats['indexed']} files")
         console.print(f"⟳ Skipped: {stats['skipped']} files (already indexed)")
         console.print(f"✗ Failed: {stats['failed']} files")
+        console.print(f"⏱️  Time: {elapsed_time:.2f}s ({files_per_second:.1f} files/sec)")
+        console.print(f"🧵 Workers: {max_workers}")
         
-        # Show failed files if any
+        # Show failed files if any (optimized display)
         if failed_files:
             console.print("\n[red]Failed files:[/red]")
             for filename, reason in failed_files[:5]:  # Show first 5
                 console.print(f"  • {filename}: {reason}")
             if len(failed_files) > 5:
                 console.print(f"  ... and {len(failed_files) - 5} more")
+                
+            # Optionally save full error log for large failure counts
+            if len(failed_files) > 10:
+                error_log_path = directory / "indexing_errors.log"
+                try:
+                    with open(error_log_path, 'w') as f:
+                        for filename, reason in failed_files:
+                            f.write(f"{filename}: {reason}\n")
+                    console.print(f"[dim]Full error log saved to: {error_log_path}[/dim]")
+                except Exception:
+                    pass  # Silently fail if can't write log
         
         return stats
+
+
+    def _find_and_filter_files(self, directory: Path, recursive: bool, pattern: Optional[str] = None) -> List[Path]:
+        """
+        Optimized file discovery with threading and efficient filtering
+        Finds all supported files in a directory and filters them based on config
+        """
+        import fnmatch
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        console.print(f'[cyan]Scanning {directory} for supported files...[/cyan]')
+        
+        # Convert constants to sets for O(1) lookup performance
+        ignore_dirs_set = set(IGNORE_DIRECTORIES) if 'IGNORE_DIRECTORIES' in globals() else set()
+        ignore_files_set = set(IGNORE_FILES) if 'IGNORE_FILES' in globals() else set()
+        supported_exts_set = set(SUPPORTED_EXTENSIONS) if 'SUPPORTED_EXTENSIONS' in globals() else {'.pdf', '.txt', '.md', '.doc', '.docx'}
+        
+        def find_files_for_extension(ext: str) -> List[Path]:
+            """Find files for a specific extension using glob"""
+            try:
+                search_pattern = f"**/*{ext}" if recursive else f"*{ext}"
+                return list(directory.glob(search_pattern))
+            except (OSError, PermissionError):
+                return []
+        
+        def is_file_ignored(file_path: Path, rel_path: Path) -> bool:
+            """Fast file filtering check"""
+            # Quick checks first (most common cases)
+                        # Check ignored directories (any part of path)
+            if ignore_dirs_set and any(part in ignore_dirs_set for part in rel_path.parts):
+                return True
+            
+            # Check ignored file patterns
+            if ignore_files_set and any(fnmatch.fnmatch(file_path.name, glob) for glob in ignore_files_set):
+                return True
+            
+            return False
+        
+        # Step 1: Parallel file discovery by extension
+        all_found_files = []
+        
+        # Use threading for file discovery if we have many extensions
+        if len(supported_exts_set) > 4:
+            with ThreadPoolExecutor(max_workers=min(8, len(supported_exts_set))) as executor:
+                future_to_ext = {
+                    executor.submit(find_files_for_extension, ext): ext 
+                    for ext in supported_exts_set
+                }
+                
+                for future in as_completed(future_to_ext):
+                    try:
+                        files_for_ext = future.result()
+                        all_found_files.extend(files_for_ext)
+                    except Exception:
+                        continue  # Skip extensions that cause errors
+        else:
+            # Sequential for small number of extensions
+            for ext in supported_exts_set:
+                all_found_files.extend(find_files_for_extension(ext))
+        
+        # Step 2: Apply user pattern filter early if specified
+        if pattern:
+            all_found_files = [f for f in all_found_files if fnmatch.fnmatch(f.name, pattern)]
+        
+        # Step 3: Parallel filtering of found files
+        unique_files = list(set(all_found_files))  # Remove duplicates efficiently
+        
+        def filter_file_batch(file_batch: List[Path]) -> List[Path]:
+            """Filter a batch of files"""
+            filtered = []
+            for f in file_batch:
+                try:
+                    if not f.is_file():
+                        continue
+                    
+                    relative_path = f.relative_to(directory)
+                    
+                    if not is_file_ignored(f, relative_path):
+                        filtered.append(f)
+                        
+                except (OSError, ValueError):
+                    continue  # Skip files that cause path errors
+            
+            return filtered
+        
+        # Process files in batches for better performance
+        batch_size = max(100, len(unique_files) // 8)  # Optimal batch size
+        file_batches = [unique_files[i:i + batch_size] for i in range(0, len(unique_files), batch_size)]
+        
+        filtered_files = []
+        
+        if len(file_batches) > 1:
+            # Parallel filtering for large file sets
+            with ThreadPoolExecutor(max_workers=min(8, len(file_batches))) as executor:
+                future_results = [executor.submit(filter_file_batch, batch) for batch in file_batches]
+                
+                for future in as_completed(future_results):
+                    try:
+                        batch_result = future.result()
+                        filtered_files.extend(batch_result)
+                    except Exception:
+                        continue
+        else:
+            # Sequential for small file sets
+            if file_batches:
+                filtered_files = filter_file_batch(file_batches[0])
+        
+        # Sort for consistent processing order
+        final_files = sorted(filtered_files)
+        
+        console.print(f"[green]Found {len(final_files)} files to process[/green]")
+        return final_files
 
     def search_by_filename(self, pattern: str) -> List[str]:
         """Search for documents by filename pattern"""
@@ -651,15 +796,27 @@ class FileParser:
 
 
 
-    def update_directory(self, directory: Path, recursive: bool = True) -> Dict[str, int]:
+    def update_directory(self, directory: Path, recursive: bool = True, 
+                    max_workers: Optional[int] = None) -> Dict[str, int]:
         """
-        Update index with only new or modified files
+        Update index with only new or modified files using multi-threading
+        
+        Args:
+            directory: Path to directory
+            recursive: Whether to search subdirectories
+            max_workers: Number of threads (defaults to optimal CPU count)
         """
         directory = Path(directory).expanduser().resolve()
         
-        console.print(f"[cyan]Checking for new files in {directory}...[/cyan]")
+        if max_workers is None:
+            max_workers = min(16, (os.cpu_count() or 1) * 2)  # Moderate threading for hash operations
         
-        # Get all currently indexed files
+        start_time = time.time()
+        
+        console.print(f"[cyan]Checking for new files in {directory} with {max_workers} workers...[/cyan]")
+        
+        # Get all currently indexed files (optimized with dict comprehension)
+        console.print("[dim]Loading existing index...[/dim]")
         all_data = self.collection.get()
         indexed_files = {
             md.get('full_path'): md.get('file_hash')
@@ -667,59 +824,171 @@ class FileParser:
             if md.get('full_path') and md.get('file_hash')
         }
         
+        console.print(f"[dim]Found {len(indexed_files)} indexed files[/dim]")
+        
+        # Use the optimized file discovery method
         current_files_on_disk = self._find_and_filter_files(directory, recursive)
-
         
-        # Find all files in directory
-        files = []
-        for ext in SUPPORTED_EXTENSIONS:
-            if recursive:
-                pattern = f"**/*{ext}"
-            else:
-                pattern = f"*{ext}"
-            
-            found = directory.glob(pattern)
-            files.extend([f for f in found 
-                        if f.is_file() 
-                        and not f.name.startswith('.')
-                        and not f.name.endswith('.icloud')])
+        if not current_files_on_disk:
+            console.print("[yellow]No files found in directory[/yellow]")
+            return {"indexed": 0, "skipped": 0, "failed": 0}
         
-        # Check which files are new or modified
+        # Parallel hash computation for change detection
+        def compute_file_info(file_path: Path) -> Tuple[str, Optional[str], bool, bool]:
+            """Compute file hash and determine if new/modified"""
+            try:
+                full_path_str = str(file_path.absolute())
+                current_hash = self._get_file_hash(file_path)
+                
+                is_new = full_path_str not in indexed_files
+                is_modified = not is_new and current_hash != indexed_files.get(full_path_str)
+                
+                return full_path_str, current_hash, is_new, is_modified
+            except Exception as e:
+                return str(file_path.absolute()), None, False, False
+        
+        # Process files in parallel to determine changes
+        console.print("[dim]Analyzing file changes...[/dim]")
+        
         new_files = []
         modified_files = []
+        hash_errors = []
         
-        for file_path in files:
-            full_path_str = str(file_path.absolute())
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=30),
+            TaskProgressColumn(),
+            console=console
+        ) as progress:
             
-            if full_path_str not in indexed_files:
-                new_files.append(file_path)
-            else:
-                # Check if file has been modified
-                current_hash = self._get_file_hash(file_path)
-                if current_hash != indexed_files[full_path_str]:
-                    modified_files.append(file_path)
+            analysis_task = progress.add_task("Analyzing files...", total=len(current_files_on_disk))
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all hash computation tasks
+                future_to_file = {
+                    executor.submit(compute_file_info, file_path): file_path
+                    for file_path in current_files_on_disk
+                }
+                
+                completed = 0
+                for future in as_completed(future_to_file):
+                    file_path = future_to_file[future]
+                    
+                    try:
+                        full_path_str, current_hash, is_new, is_modified = future.result()
+                        
+                        if current_hash is None:
+                            hash_errors.append(file_path)
+                        elif is_new:
+                            new_files.append(file_path)
+                        elif is_modified:
+                            modified_files.append(file_path)
+                        
+                        completed += 1
+                        if completed % max(1, len(current_files_on_disk) // 20) == 0:
+                            progress.update(analysis_task, advance=max(1, len(current_files_on_disk) // 20))
+                            
+                    except Exception:
+                        hash_errors.append(file_path)
+                        completed += 1
+                
+                # Ensure progress bar completes
+                progress.update(analysis_task, completed=len(current_files_on_disk))
         
         total_updates = len(new_files) + len(modified_files)
         
         if total_updates == 0:
-            console.print("[green]✓ Everything is up to date![/green]")
+            elapsed = time.time() - start_time
+            console.print(f"[green]✓ Everything is up to date! ({elapsed:.1f}s)[/green]")
+            if hash_errors:
+                console.print(f"[yellow]⚠️  {len(hash_errors)} files had hash computation errors[/yellow]")
             return {"indexed": 0, "skipped": 0, "failed": 0}
         
         console.print(f"[yellow]Found {len(new_files)} new files and {len(modified_files)} modified files[/yellow]")
+        if hash_errors:
+            console.print(f"[yellow]⚠️  {len(hash_errors)} files had hash computation errors[/yellow]")
         
-        # Index new and modified files
+        # Parallel indexing of new and modified files
+        stats_lock = Lock()
         stats = {"indexed": 0, "skipped": 0, "failed": 0}
+        failed_files = []
         
+        def index_file_wrapper(file_path: Path) -> Tuple[bool, str, str]:
+            """Wrapper for thread-safe file indexing"""
+            try:
+                success, message = self.index_file(file_path, force=True)
+                return success, message, file_path.name
+            except Exception as e:
+                return False, str(e), file_path.name
+        
+        def update_stats_safe(success: bool, message: str, filename: str):
+            """Thread-safe statistics update"""
+            with stats_lock:
+                if success:
+                    stats["indexed"] += 1
+                else:
+                    stats["failed"] += 1
+                    failed_files.append((filename, message))
+        
+        # Index files with progress tracking
         all_files = new_files + modified_files
-        for file_path in track(all_files, description="Updating index..."):
-            success, message = self.index_file(file_path, force=True)
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
             
-            if success:
-                stats["indexed"] += 1
-                console.print(f"[green]✓ {message}[/green]")
-            else:
-                stats["failed"] += 1
-                console.print(f"[red]✗ {message}[/red]")
+            index_task = progress.add_task("Updating index...", total=len(all_files))
+            completed = 0
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit indexing tasks
+                future_to_file = {
+                    executor.submit(index_file_wrapper, file_path): file_path
+                    for file_path in all_files
+                }
+                
+                for future in as_completed(future_to_file):
+                    file_path = future_to_file[future]
+                    
+                    try:
+                        success, message, filename = future.result()
+                        update_stats_safe(success, message, filename)
+                        
+                        completed += 1
+                        progress.update(
+                            index_task,
+                            advance=1,
+                            description=f"Updating: {filename} ({completed}/{len(all_files)})"
+                        )
+                        
+                    except Exception as e:
+                        update_stats_safe(False, str(e), file_path.name)
+                        completed += 1
+                        progress.advance(index_task)
+        
+        # Performance summary
+        elapsed_time = time.time() - start_time
+        files_per_second = total_updates / elapsed_time if elapsed_time > 0 else 0
+        
+        console.print("\n[bold green]Index Update Complete![/bold green]")
+        console.print(f"✓ Indexed: {stats['indexed']} files")
+        console.print(f"✗ Failed: {stats['failed']} files")
+        console.print(f"⏱️  Time: {elapsed_time:.2f}s ({files_per_second:.1f} files/sec)")
+        console.print(f"🧵 Workers: {max_workers}")
+        
+        # Show failed files if any
+        if failed_files:
+            console.print("\n[red]Failed files:[/red]")
+            for filename, reason in failed_files[:5]:
+                console.print(f"  • {filename}: {reason}")
+            if len(failed_files) > 5:
+                console.print(f"  ... and {len(failed_files) - 5} more")
         
         return stats
 
