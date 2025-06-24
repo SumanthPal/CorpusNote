@@ -17,24 +17,25 @@ A powerful command-line tool for indexing, searching, and chatting with your doc
 
 #### Linux/macOS:
 ```bash
-git clone https://github.com/yourusername/corpus-cli.git
-cd corpus-cli
-./install.sh
+git clone https://github.com/SumanthPal/CorpusNote.git
+cd CorpusNote
+chmod +x installation/install.sh
+./installation/install.sh
+
 ```
 
 #### Windows:
 ```powershell
-git clone https://github.com/yourusername/corpus-cli.git
+git clone https://github.com/SumanthPal/CorpusNote.git
 cd corpus-cli
-powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File installation\install.ps1
 ```
 
 #### Using Make:
 ```bash
-git clone https://github.com/yourusername/corpus-cli.git
+git clone https://github.com/SumanthPal/CorpusNote.git
 cd corpus-cli
-make install
-make setup  # Run configuration wizard
+make -f installation/Makefile install
 ```
 
 The installation script will:
@@ -51,8 +52,8 @@ If you prefer to install manually:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/corpus-cli.git
-cd corpus-cli
+git clone https://github.com/SumanthPal/CorpusNote.git
+cd CorpusNote
 
 # Create virtual environment
 python3 -m venv env
@@ -70,18 +71,54 @@ corpus config setup
 
 ### Post-Installation
 
-After installation, activate your virtual environment:
+
+**⚠️ IMPORTANT: Always activate the virtual environment first!**
+
 ```bash
+# Activate virtual environment (required every time)
 source env/bin/activate  # Linux/macOS
 # or
 env\Scripts\activate     # Windows
 ```
-
-Then configure your API key:
-```bash
+# Now you can use corpus
+```
+corpus --help
 corpus config setup
-# or
-corpus config set GEMINI_API_KEY "your-api-key"
+
+alias corpus='cd /path/to/CorpusNote && source env/bin/activate && corpus'
+```
+
+### Making Corpus Available Globally
+
+After installation, you have several options to make the `corpus` comamdn easily accessible.
+
+#### Option 1: Auto-configure Shell Alias (Recommended)
+
+Run the provided script to automatically add corpus to your shell:
+
+```bash
+cd CorpusNote
+./scripts/add_corpus_alias.sh
+source ~/.zshrc  # or ~/.bashrc
+```
+
+This creates a shell function that automatically activates the environment when you run corpus.
+
+#### Option 2: Manual Shell Alias
+Add this to your `~/.zshrc` or `~/.bashrc`:
+```bash
+# Corpus CLI
+corpus() {
+    cd /path/to/CorpusNote && source env/bin/activate && command corpus "$@"
+    cd - > /dev/null
+}
+```
+
+#### Option 3: Global Wrapper Script
+From system-wide access without shell configuration.
+```bash
+sudo cp installation/corpus-wrapper.sh /usr/local/bin/corpus
+sudo chmod +x /usr/local/bin/corpus
 ```
 
 ## Quick Start 🏃‍♂️

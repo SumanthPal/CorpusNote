@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="corpus-cli",
-    version="1.1.0",
+    version="1.0.0",
     description="A powerful CLI for indexing and chatting with documents using AI",
     author="Your Name",
     packages=find_packages(),

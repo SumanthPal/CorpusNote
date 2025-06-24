@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# TODO: get this soon
-GEMINI_API_KEY = os.getenv("GEMINI")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # this is a document.db
 DIAGRAMS_PATH = './diagrams'
