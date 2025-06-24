@@ -101,6 +101,8 @@ class FileParser:
             return self._extract_pdf_text(file_path)
         elif suffix in ['.txt', '.md']:
             return self._extract_plain_text(file_path)
+        elif suffix == '.svg':
+            return self._extract_plain_text(file_path)  # SVGs often contain text
         elif suffix in ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp']:
             return self._extract_image_content(file_path)
         elif suffix in CODE_EXTENSIONS:

@@ -11,6 +11,8 @@ from datetime import datetime
 import json
 from pathlib import Path
 from config import *
+import subprocess
+import shutil
 
 console = Console()
 
@@ -33,9 +35,11 @@ class ChatInterface:
             self.collection_exists = False
             console.print("[yellow]Warning: No document collection found. Index some documents first.[/yellow]")
         
-        # Chat history for context
-        self.history = []
-        self.max_history = 10  # Keep last 10 exchanges
+        #creating a directry to store generated diagrams
+        
+            
+        self.history = []  # Store conversation history 
+        self.max_history = MAX_MEMORY  # Keep last 10 exchanges
     
     def check_collection(self) -> bool:
         """Check if collection exists and has documents"""
@@ -150,7 +154,7 @@ class ChatInterface:
         full_context = "\n---\n".join(organized_context)
         
         return full_context, sources
-
+    
     def generate_response(self, query: str, context: str, sources: List[Dict]) -> str:
         """Generate response using Gemini with enhanced image awareness"""
         # Analyze sources to understand content types
@@ -565,6 +569,7 @@ Please provide a comprehensive answer based on the above context:"""
         
         console.print(f"[green]✓ Conversation exported to {filename}[/green]")
         return filename
+    
 
 
 # Standalone test function
