@@ -245,7 +245,7 @@ def chat(
     no_sources: bool = typer.Option(False, "--no-sources", help="Hide source citations")
 ):
     """Start interactive chat with your documents"""
-    print_header("Research Assistant Chat")
+    print_header("Corpus Chat")
     chat_interface = LazyLoader.get_chat_interface()
     chat_interface.interactive_chat(document_filter=filter)
 
@@ -437,7 +437,7 @@ def diagram_gallery(
     if not diagrams:
         console.print("[yellow]No diagrams found[/yellow]")
         console.print("\nGenerate diagrams using:")
-        console.print("  [cyan]research diagram \"your description here\"[/cyan]")
+        console.print("  [cyan]corpus diagram \"your description here\"[/cyan]")
         return
     
     # Create table
@@ -472,11 +472,11 @@ def diagram_gallery(
     
     console.print(table)
     console.print("\n[dim]Legend: 📄=has source, n=nodes, c=connections[/dim]")
-    console.print("[dim]Use 'research diagram' for interactive mode[/dim]")
+    console.print("[dim]Use 'corpus diagram' for interactive mode[/dim]")
 
 @app.command()
 def update(
-    path: str = typer.Argument(..., help="Path to directory to update"),
+    path: str = typer.Argument(..., help="Path to file or directory to update"),
     recursive: bool = typer.Option(True, "--recursive/--no-recursive", "-r/-R", help="Recursively check subdirectories"),
     max_workers: Optional[int] = typer.Option(None, "--workers", "-w", help="Number of threads (default: auto-detect optimal)"),
     disable_threading: bool = typer.Option(False, "--no-threading", help="Disable multi-threading (single-threaded mode)")
@@ -502,21 +502,58 @@ def update(
         console.print(f"[dim]Auto-detected {optimal} optimal worker threads[/dim]")
     
     try:
-        if not path_obj.is_dir():
-            console.print(f"[red]Path must be a directory: {path}[/red]")
+        if path_obj.is_file():
+            # Single file update - check if it's been modified
+            console.print(f"[cyan]Checking file: {path_obj.name}[/cyan]")
+            
+            # Get file hash to check if modified
+            file_hash = parser._get_file_hash(path_obj)
+            
+            # Check if already indexed and if hash matches
+            all_data = parser.collection.get()
+            indexed_files = {
+                md.get('full_path'): md.get('file_hash')
+                for md in all_data['metadatas']
+                if md.get('full_path') and md.get('file_hash')
+            }
+            
+            full_path_str = str(path_obj.absolute())
+            
+            if full_path_str not in indexed_files:
+                # New file
+                console.print("[yellow]File not in index, adding...[/yellow]")
+                success, message = parser.index_file(path_obj, force=False)
+            elif file_hash != indexed_files.get(full_path_str):
+                # Modified file
+                console.print("[yellow]File has been modified, updating...[/yellow]")
+                success, message = parser.index_file(path_obj, force=True)
+            else:
+                # No changes
+                console.print("[green]✓ File is up to date[/green]")
+                return
+            
+            if success:
+                console.print(f"[green]✓ {message}[/green]")
+            else:
+                console.print(f"[red]✗ {message}[/red]")
+                raise typer.Exit(1)
+                
+        elif path_obj.is_dir():
+            # Directory update - existing behavior
+            stats = parser.update_directory(
+                path_obj, 
+                recursive=recursive,
+                max_workers=workers
+            )
+            
+            # Summary output
+            console.print(f"\n[bold]Update Complete![/bold]")
+            console.print(f"[green]✓ Updated: {stats['indexed']} files[/green]")
+            console.print(f"[red]✗ Failed: {stats['failed']} files[/red]")
+        else:
+            console.print(f"[red]Path not found: {path}[/red]")
             raise typer.Exit(1)
             
-        stats = parser.update_directory(
-            path_obj, 
-            recursive=recursive,
-            max_workers=workers
-        )
-        
-        # Summary output
-        console.print(f"\n[bold]Update Complete![/bold]")
-        console.print(f"[green]✓ Updated: {stats['indexed']} files[/green]")
-        console.print(f"[red]✗ Failed: {stats['failed']} files[/red]")
-        
     except KeyboardInterrupt:
         console.print(f"\n[yellow]⚠️  Update interrupted by user[/yellow]")
         raise typer.Exit(130)
@@ -526,8 +563,7 @@ def update(
             import traceback
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
-
-
+    
 @app.command()
 def watch(
     path: str = typer.Argument(..., help="Directory to watch for changes"),
@@ -552,7 +588,7 @@ def status():
     if stats['total_chunks'] == 0:
         console.print("[yellow]No documents indexed yet[/yellow]")
         console.print("\nGet started by running:")
-        console.print("  [cyan]research index ~/Documents/YourFolder[/cyan]")
+        console.print("  [cyan]corpus index ~/Documents/YourFolder[/cyan]")
         return
     
     # Check diagram availability
@@ -769,8 +805,10 @@ def info():
         console.print(Panel(section, padding=(1, 2)))
         console.print()
 
-@app.callback()
+
+@app.callback(invoke_without_command=True)
 def main_callback(
+    ctx: typer.Context,
     version: bool = typer.Option(False, "--version", "-v", help="Show version information"),
     debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug mode")
 ):
@@ -780,7 +818,7 @@ def main_callback(
         console.print("[dim]Debug mode enabled[/dim]")
     
     if version:
-        console.print("[bold]Research CLI[/bold] version 1.1.0")
+        console.print("[bold]Corpus CLI[/bold] version 1.1.0")
         console.print("Built with: ChromaDB, Gemini AI, Rich, D2")
         console.print("\n[bold]Features:[/bold]")
         console.print("• Document indexing and search")
@@ -789,7 +827,12 @@ def main_callback(
         console.print("• Multi-threaded processing")
         console.print("• Web and GitHub indexing")
         raise typer.Exit()
-
+    
+    # If no command is provided and no flags, show help
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        raise typer.Exit()
+    
 create_config_commands(app)
 # Entry point
 if __name__ == "__main__":
