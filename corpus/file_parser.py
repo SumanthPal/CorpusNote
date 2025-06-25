@@ -414,13 +414,27 @@ class FileParser:
 
     
     def clear_all(self) -> bool:
-        """Clear all indexed documents"""
+        """Clear all indexed documents by recreating the collection"""
         try:
             # Get count before clearing
             count = self.collection.count()
             
-            # Delete all
-            self.collection.delete(where={})
+            if count == 0:
+                console.print("[yellow]Database is already empty[/yellow]")
+                return True
+            
+            # Delete and recreate the collection
+            collection_name = self.collection.name
+            collection_metadata = self.collection.metadata
+            
+            # Delete the collection
+            self.client.delete_collection(name=collection_name)
+            
+            # Recreate it with the same metadata
+            self.collection = self.client.create_collection(
+                name=collection_name,
+                metadata=collection_metadata
+            )
             
             console.print(f"[green]✓ Cleared {count} chunks from database[/green]")
             return True
