@@ -805,7 +805,214 @@ def info():
         console.print(Panel(section, padding=(1, 2)))
         console.print()
 
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Search query"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Number of results to show"),
+    show_content: bool = typer.Option(False, "--content", "-c", help="Show document content preview")
+):
+    """Search indexed documents"""
+    print_header("Document Search")
+    parser = LazyLoader.get_parser()
+    chat_interface = LazyLoader.get_chat_interface()
+    
+    # Perform search
+    results = chat_interface.search_documents(query, n_results=limit)
+    
+    if not results['documents'] or not results['documents'][0]:
+        console.print("[yellow]No results found[/yellow]")
+        return
+    
+    # Format results
+    console.print(f"\n[bold]Found {len(results['documents'][0])} results for: '{query}'[/bold]\n")
+    
+    for i, (doc, metadata, distance) in enumerate(zip(
+        results['documents'][0], 
+        results['metadatas'][0],
+        results['distances'][0]
+    ), 1):
+        relevance = 1 - distance
+        source = metadata.get('source', 'Unknown')
+        page = metadata.get('page', 'Unknown')
+        
+        console.print(f"[cyan]{i}. {source}[/cyan] - {page}")
+        console.print(f"   Relevance: {'█' * int(relevance * 10)}{'░' * (10 - int(relevance * 10))} {relevance:.2f}")
+        
+        if show_content:
+            preview = doc[:200] + "..." if len(doc) > 200 else doc
+            console.print(f"   [dim]{preview}[/dim]")
+        console.print()
+        
+@app.command()
+def summarize(
+    filename: str = typer.Argument(..., help="Document filename to summarize"),
+    detail: str = typer.Option("medium", "--detail", "-d", help="Summary detail level: brief, medium, detailed")
+):
+    """Generate AI summary of a specific document"""
+    print_header("Document Summary")
+    chat_interface = LazyLoader.get_chat_interface()
+    
+    # Get all chunks for this document
+    try:
+        collection = chat_interface.collection
+        results = collection.get(where={"source": filename})
+        
+        if not results['documents']:
+            # Try partial match
+            all_data = collection.get()
+            matching_docs = []
+            for metadata in all_data['metadatas']:
+                if filename.lower() in metadata.get('source', '').lower():
+                    matching_docs.append(metadata.get('source'))
+            
+            if matching_docs:
+                console.print(f"[yellow]Document '{filename}' not found. Did you mean:[/yellow]")
+                for doc in list(set(matching_docs))[:5]:
+                    console.print(f"  • {doc}")
+                return
+            else:
+                console.print(f"[red]Document '{filename}' not found[/red]")
+                return
+        
+        # Combine chunks
+        full_text = "\n".join(results['documents'])
+        doc_metadata = results['metadatas'][0] if results['metadatas'] else {}
+        
+        # Generate summary based on detail level
+        prompts = {
+            "brief": "Provide a 2-3 sentence summary of the main points:",
+            "medium": "Provide a comprehensive 2-3 paragraph summary including main topics and key findings:",
+            "detailed": "Provide a detailed summary with sections for: Overview, Main Topics, Key Findings, Important Details, and Conclusions:"
+        }
+        
+        prompt = f"""{prompts.get(detail, prompts['medium'])}
 
+Document: {filename}
+Type: {doc_metadata.get('file_type', 'unknown')}
+Size: {len(full_text)} characters
+
+Content:
+{full_text[:10000]}{'...' if len(full_text) > 10000 else ''}"""
+        
+        # Show progress
+        with console.status("[bold green]Generating summary..."):
+            response = chat_interface.model.generate_content(prompt)
+        
+        # Display summary
+        console.print(f"\n[bold]Summary of {filename}[/bold]")
+        console.print(f"[dim]Document type: {doc_metadata.get('file_type', 'unknown')}[/dim]")
+        console.print(f"[dim]Chunks: {len(results['documents'])}[/dim]\n")
+        
+        console.print(Panel(response.text, title=f"{detail.capitalize()} Summary", padding=(1, 2)))
+        
+    except Exception as e:
+        console.print(f"[red]Error generating summary: {e}[/red]")
+        raise typer.Exit(1)
+    
+@app.command()
+def similar(
+    filename: str = typer.Argument(..., help="Find documents similar to this one"),
+    limit: int = typer.Option(5, "--limit", "-l", help="Number of similar documents to find")
+):
+    """Find documents similar to a given document"""
+    print_header("Similar Documents")
+    parser = LazyLoader.get_parser()
+    chat_interface = LazyLoader.get_chat_interface()
+    
+    # Get source document
+    results = chat_interface.collection.get(where={"source": filename}, limit=1)
+    
+    if not results['documents']:
+        console.print(f"[red]Document '{filename}' not found[/red]")
+        return
+    
+    # Use first chunk as query
+    query_text = results['documents'][0]
+    
+    # Search for similar
+    similar_results = chat_interface.collection.query(
+        query_texts=[query_text],
+        n_results=limit + 10  # Get extra to filter out self
+    )
+    
+    # Filter and display
+    console.print(f"\n[bold]Documents similar to: {filename}[/bold]\n")
+    
+    seen = set()
+    count = 0
+    
+    for metadata, distance in zip(similar_results['metadatas'][0], similar_results['distances'][0]):
+        doc_name = metadata.get('source', '')
+        if doc_name != filename and doc_name not in seen:
+            seen.add(doc_name)
+            similarity = 1 - distance
+            
+            console.print(f"{count + 1}. [cyan]{doc_name}[/cyan]")
+            console.print(f"   Similarity: {'█' * int(similarity * 10)}{'░' * (10 - int(similarity * 10))} {similarity:.2f}")
+            console.print(f"   Type: {metadata.get('file_type', 'unknown')}")
+            console.print()
+            
+            count += 1
+            if count >= limit:
+                break
+            
+
+@app.command()
+def extract(
+    filename: str = typer.Argument(..., help="Document to extract from"),
+    topic: str = typer.Argument(..., help="Topic or information to extract"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, json, markdown")
+):
+    """Extract specific information from a document"""
+    print_header("Information Extraction")
+    chat_interface = LazyLoader.get_chat_interface()
+    
+    # Get document chunks
+    results = chat_interface.collection.get(where={"source": filename})
+    
+    if not results['documents']:
+        console.print(f"[red]Document '{filename}' not found[/red]")
+        return
+    
+    # Combine relevant chunks
+    full_text = "\n".join(results['documents'][:10])  # Limit to avoid token issues
+    
+    # Create extraction prompt
+    format_instructions = {
+        "text": "Provide the extracted information as clear, formatted text.",
+        "json": "Provide the extracted information as valid JSON.",
+        "markdown": "Provide the extracted information as formatted markdown with headers and lists."
+    }
+    
+    prompt = f"""Extract all information about '{topic}' from this document.
+{format_instructions.get(format, format_instructions['text'])}
+
+Document: {filename}
+Content:
+{full_text}
+
+Extract and organize all relevant information about: {topic}"""
+    
+    # Extract information
+    with console.status(f"[bold green]Extracting information about '{topic}'..."):
+        response = chat_interface.model.generate_content(prompt)
+    
+    # Display results
+    console.print(f"\n[bold]Extracted: {topic}[/bold]")
+    console.print(f"[dim]From: {filename}[/dim]\n")
+    
+    if format == "json":
+        # Try to pretty-print JSON
+        try:
+            import json
+            parsed = json.loads(response.text)
+            console.print_json(data=parsed)
+        except:
+            console.print(response.text)
+    else:
+        console.print(Panel(response.text, padding=(1, 2))) 
+        
+         
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,

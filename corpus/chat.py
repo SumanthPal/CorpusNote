@@ -335,29 +335,38 @@ Please provide a comprehensive answer based on the above context:"""
         console.print("[yellow]Conversation history cleared[/yellow]")
     
     def interactive_chat(self, document_filter: str = None):
-        """Run interactive chat session with enhanced image support"""
+        """Run interactive chat session with enhanced commands"""
         if not self.check_collection():
             return
         
-        # Display welcome message with image support info
+        # Display enhanced welcome message
         console.print(Panel.fit(
             "[bold green]Research Assistant[/bold green]\n"
             "Chat with your indexed documents including images, diagrams, and text. "
             "I can help you find and understand information from all your research materials.\n\n"
-            "Commands:\n"
+            "[bold]Chat Commands:[/bold]\n"
             "• Type your question and press Enter\n"
             "• 'clear' - Clear conversation history\n"
-            "• 'sources' - Toggle source display\n"
+            "• 'sources on/off' - Toggle source display\n"
             "• 'stats' - Show database statistics\n"
-            "• 'filter images' - Search only image content\n"
-            "• 'filter text' - Search only text documents\n"
-            "• 'clear filter' - Remove content type filters\n"
             "• 'export' - Export conversation to file\n"
-            "• 'exit' or Ctrl+C - Exit chat",
+            "• 'exit' or Ctrl+C - Exit chat\n\n"
+            "[bold]Document Commands:[/bold]\n"
+            "• 'search <query>' - Search documents\n"
+            "• 'summarize <filename>' - Summarize a document\n"
+            "• 'preview <filename>' - Preview document content\n"
+            "• 'similar <filename>' - Find similar documents\n"
+            "• 'extract <filename> <topic>' - Extract specific info\n"
+            "• 'compare <file1> <file2>' - Compare documents\n"
+            "• 'topics' - Analyze topics in database\n"
+            "• 'list [pattern]' - List documents\n\n"
+            "[bold]Filter Commands:[/bold]\n"
+            "• 'filter images/text/clear' - Filter content types\n"
+            "• 'focus <filename>' - Focus on specific document",
             title="Welcome"
         ))
         
-        # Show current status with content type breakdown
+        # Show current status
         self.show_collection_summary()
         
         if document_filter:
@@ -366,6 +375,7 @@ Please provide a comprehensive answer based on the above context:"""
         # Chat settings
         show_sources = True
         content_filter = None
+        focused_document = None
         
         # Main chat loop
         while True:
@@ -374,49 +384,155 @@ Please provide a comprehensive answer based on the above context:"""
                 console.print()
                 query = Prompt.ask("[bold cyan]You[/bold cyan]")
                 
-                # Handle commands
-                if query.lower() in ['exit', 'quit', 'q']:
+                # Parse commands
+                query_lower = query.lower()
+                query_parts = query.split()
+                
+                # Handle exit commands
+                if query_lower in ['exit', 'quit', 'q']:
                     console.print("[yellow]Goodbye![/yellow]")
                     break
                 
-                elif query.lower() == 'clear':
+                # Clear history
+                elif query_lower == 'clear':
                     self.clear_history()
                     continue
                 
-                elif query.lower() == 'sources':
-                    show_sources = not show_sources
+                # Toggle sources
+                elif query_lower in ['sources', 'sources on', 'sources off']:
+                    if query_lower == 'sources on':
+                        show_sources = True
+                    elif query_lower == 'sources off':
+                        show_sources = False
+                    else:
+                        show_sources = not show_sources
                     status = "enabled" if show_sources else "disabled"
                     console.print(f"[yellow]Source display {status}[/yellow]")
                     continue
                 
-                elif query.lower() == 'stats':
+                # Show stats
+                elif query_lower == 'stats':
                     self.show_stats()
                     continue
                 
-                elif query.lower() in ['filter images', 'filter image']:
+                # Search command
+                elif query_lower.startswith('search '):
+                    search_query = query[7:].strip()
+                    if not search_query:
+                        console.print("[yellow]Please provide a search query[/yellow]")
+                        continue
+                    
+                    self._handle_search_command(search_query, focused_document)
+                    continue
+                
+                # Summarize command
+                elif query_lower.startswith('summarize '):
+                    filename = query[10:].strip()
+                    if not filename:
+                        console.print("[yellow]Please provide a filename[/yellow]")
+                        continue
+                    
+                    self._handle_summarize_command(filename)
+                    continue
+                
+                # Preview command
+                elif query_lower.startswith('preview '):
+                    filename = query[8:].strip()
+                    if not filename:
+                        console.print("[yellow]Please provide a filename[/yellow]")
+                        continue
+                    
+                    self._handle_preview_command(filename)
+                    continue
+                
+                # Similar documents command
+                elif query_lower.startswith('similar '):
+                    filename = query[8:].strip()
+                    if not filename:
+                        console.print("[yellow]Please provide a filename[/yellow]")
+                        continue
+                    
+                    self._handle_similar_command(filename)
+                    continue
+                
+                # Extract command
+                elif query_lower.startswith('extract '):
+                    parts = query[8:].strip().split(' ', 1)
+                    if len(parts) < 2:
+                        console.print("[yellow]Usage: extract <filename> <topic>[/yellow]")
+                        continue
+                    
+                    filename, topic = parts
+                    self._handle_extract_command(filename, topic)
+                    continue
+                
+                # Compare command
+                elif query_lower.startswith('compare '):
+                    parts = query[8:].strip().split()
+                    if len(parts) < 2:
+                        console.print("[yellow]Usage: compare <file1> <file2>[/yellow]")
+                        continue
+                    
+                    file1, file2 = parts[0], parts[1]
+                    self._handle_compare_command(file1, file2)
+                    continue
+                
+                # Topics command
+                elif query_lower == 'topics':
+                    self._handle_topics_command()
+                    continue
+                
+                # List command
+                elif query_lower.startswith('list'):
+                    pattern = query[4:].strip() if len(query) > 4 else None
+                    self._handle_list_command(pattern)
+                    continue
+                
+                # Filter commands
+                elif query_lower in ['filter images', 'filter image']:
                     content_filter = 'images'
                     console.print("[yellow]Now filtering to image content only[/yellow]")
                     continue
                 
-                elif query.lower() in ['filter text', 'filter documents']:
+                elif query_lower in ['filter text', 'filter documents']:
                     content_filter = 'text'
                     console.print("[yellow]Now filtering to text documents only[/yellow]")
                     continue
                 
-                elif query.lower() in ['clear filter', 'no filter']:
+                elif query_lower in ['clear filter', 'no filter']:
                     content_filter = None
                     console.print("[yellow]Content type filter cleared[/yellow]")
                     continue
                 
-                elif query.lower() == 'export':
+                # Focus command
+                elif query_lower.startswith('focus '):
+                    filename = query[6:].strip()
+                    if filename:
+                        focused_document = filename
+                        console.print(f"[yellow]Focused on: {filename}[/yellow]")
+                        console.print("[dim]Use 'focus clear' to remove focus[/dim]")
+                    continue
+                
+                elif query_lower == 'focus clear':
+                    focused_document = None
+                    console.print("[yellow]Document focus cleared[/yellow]")
+                    continue
+                
+                # Export command
+                elif query_lower == 'export':
                     self.export_conversation()
+                    continue
+                
+                # Help command
+                elif query_lower in ['help', '?']:
+                    self._show_help()
                     continue
                 
                 elif query.strip() == '':
                     continue
                 
-                # Process the query with current filters
-                active_filter = content_filter or document_filter
+                # Process as regular chat query
+                active_filter = focused_document or content_filter or document_filter
                 with console.status("[bold green]Thinking...[/bold green]"):
                     result = self.chat(query, active_filter, show_sources)
                 
@@ -433,161 +549,394 @@ Please provide a comprehensive answer based on the above context:"""
                 console.print("\n[yellow]Use 'exit' to quit[/yellow]")
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
-    
-    def show_collection_summary(self):
-        """Show brief collection summary with content type breakdown"""
-        if not self.check_collection():
+
+    def _handle_search_command(self, search_query: str, focused_document: str = None):
+        """Handle document search within chat"""
+        console.print(f"\n[bold]Searching for: '{search_query}'[/bold]")
+        
+        # Build filter if focused
+        filter_dict = None
+        if focused_document:
+            filter_dict = {"source": focused_document}
+            console.print(f"[dim]Searching within: {focused_document}[/dim]")
+        
+        # Perform search
+        results = self.search_documents(search_query, filter_dict, n_results=10)
+        
+        if not results['documents'] or not results['documents'][0]:
+            console.print("[yellow]No results found[/yellow]")
             return
         
-        all_data = self.collection.get()
-        total_chunks = len(all_data['ids'])
+        # Display results
+        console.print(f"\nFound {len(results['documents'][0])} results:\n")
         
-        # Count content types
-        content_types = {}
-        documents = set()
+        for i, (doc, metadata, distance) in enumerate(zip(
+            results['documents'][0][:5],  # Show top 5
+            results['metadatas'][0][:5],
+            results['distances'][0][:5]
+        ), 1):
+            relevance = 1 - distance
+            source = metadata.get('source', 'Unknown')
+            page = metadata.get('page', 'Unknown')
+            
+            # Highlight search terms
+            preview = doc[:200] + "..." if len(doc) > 200 else doc
+            for term in search_query.split():
+                preview = preview.replace(term, f"[bold yellow]{term}[/bold yellow]")
+            
+            console.print(f"{i}. [cyan]{source}[/cyan] - {page}")
+            console.print(f"   Relevance: {'█' * int(relevance * 10)}{'░' * (10 - int(relevance * 10))} {relevance:.2f}")
+            console.print(f"   [dim]{preview}[/dim]\n")
+
+    def _handle_summarize_command(self, filename: str):
+        """Handle document summarization within chat"""
+        console.print(f"\n[bold]Summarizing: {filename}[/bold]")
         
-        for metadata in all_data['metadatas']:
-            content_type = metadata.get('content_type', 'text')
-            content_types[content_type] = content_types.get(content_type, 0) + 1
-            documents.add(metadata.get('source', 'Unknown'))
+        # Get document chunks
+        results = self.collection.get(where={"source": filename})
+        
+        if not results['documents']:
+            # Try fuzzy match
+            suggestions = self._find_similar_filenames(filename)
+            if suggestions:
+                console.print(f"[yellow]Document '{filename}' not found. Did you mean:[/yellow]")
+                for i, suggestion in enumerate(suggestions[:5], 1):
+                    console.print(f"  {i}. {suggestion}")
+                console.print("[dim]Try: summarize <exact filename>[/dim]")
+            else:
+                console.print(f"[red]Document '{filename}' not found[/red]")
+            return
+        
+        # Generate summary
+        with console.status("[bold green]Generating summary..."):
+            full_text = "\n".join(results['documents'])
+            
+            prompt = f"""Provide a comprehensive summary of this document in 2-3 paragraphs.
+    Include main topics, key findings, and important details.
+
+    Document: {filename}
+    Content: {full_text[:8000]}"""
+            
+            response = self.model.generate_content(prompt)
         
         # Display summary
-        summary = f"Connected to database: {total_chunks} chunks from {len(documents)} documents"
+        metadata = results['metadatas'][0] if results['metadatas'] else {}
+        console.print(f"\n[bold]Summary[/bold]")
+        console.print(f"[dim]Type: {metadata.get('file_type', 'unknown')} | Chunks: {len(results['documents'])}[/dim]\n")
+        console.print(Panel(Markdown(response.text), padding=(1, 2)))
+
+    def _handle_preview_command(self, filename: str):
+        """Show preview of document content"""
+        results = self.collection.get(where={"source": filename}, limit=2)
         
-        if content_types:
-            type_info = []
-            for ctype, count in content_types.items():
-                if ctype == 'image':
-                    type_info.append(f"{count} image chunks")
-                else:
-                    type_info.append(f"{count} text chunks")
-            summary += f" ({', '.join(type_info)})"
-        
-        console.print(f"[dim]{summary}[/dim]")
-    
-    def show_stats(self):
-        """Show database statistics with content type breakdown"""
-        if not self.check_collection():
+        if not results['documents']:
+            console.print(f"[red]Document '{filename}' not found[/red]")
             return
         
-        # Get all metadata
+        # Show metadata
+        metadata = results['metadatas'][0]
+        console.print(f"\n[bold]Document Preview: {filename}[/bold]")
+        console.print(f"[dim]Type: {metadata.get('file_type', 'unknown')} | ")
+        console.print(f"Total chunks: {metadata.get('total_chunks', 'unknown')} | ")
+        console.print(f"Indexed: {metadata.get('indexed_at', 'unknown')}[/dim]\n")
+        
+        # Show first chunk
+        preview = results['documents'][0]
+        if len(preview) > 1000:
+            preview = preview[:1000] + "..."
+        
+        console.print(Panel(preview, title="Content Preview", padding=(1, 2)))
+        
+        if len(results['documents']) > 1:
+            console.print(f"\n[dim]... and {metadata.get('total_chunks', 1) - 1} more chunks[/dim]")
+
+    def _handle_similar_command(self, filename: str):
+        """Find similar documents"""
+        # Get source document
+        results = self.collection.get(where={"source": filename}, limit=1)
+        
+        if not results['documents']:
+            console.print(f"[red]Document '{filename}' not found[/red]")
+            return
+        
+        console.print(f"\n[bold]Finding documents similar to: {filename}[/bold]")
+        
+        # Search for similar
+        with console.status("[bold green]Analyzing similarity..."):
+            similar_results = self.collection.query(
+                query_texts=[results['documents'][0]],
+                n_results=15
+            )
+        
+        # Display results
+        seen = set()
+        count = 0
+        
+        for metadata, distance in zip(similar_results['metadatas'][0], similar_results['distances'][0]):
+            doc_name = metadata.get('source', '')
+            if doc_name != filename and doc_name not in seen:
+                seen.add(doc_name)
+                similarity = 1 - distance
+                
+                count += 1
+                console.print(f"\n{count}. [cyan]{doc_name}[/cyan]")
+                console.print(f"   Similarity: {'█' * int(similarity * 10)}{'░' * (10 - int(similarity * 10))} {similarity:.2f}")
+                console.print(f"   Type: {metadata.get('file_type', 'unknown')}")
+                
+                if count >= 5:
+                    break
+
+    def _handle_extract_command(self, filename: str, topic: str):
+        """Extract specific information from document"""
+        results = self.collection.get(where={"source": filename})
+        
+        if not results['documents']:
+            console.print(f"[red]Document '{filename}' not found[/red]")
+            return
+        
+        console.print(f"\n[bold]Extracting: '{topic}' from {filename}[/bold]")
+        
+        with console.status("[bold green]Extracting information..."):
+            full_text = "\n".join(results['documents'][:10])
+            
+            prompt = f"""Extract all information about '{topic}' from this document.
+    Organize the information clearly with sections if appropriate.
+    If the topic is not found, say so clearly.
+
+    Document: {filename}
+    Content: {full_text}
+
+    Extract information about: {topic}"""
+            
+            response = self.model.generate_content(prompt)
+        
+        console.print(Panel(Markdown(response.text), title=f"Extracted: {topic}", padding=(1, 2)))
+
+    def _handle_compare_command(self, file1: str, file2: str):
+        """Compare two documents"""
+        # Get both documents
+        doc1 = self.collection.get(where={"source": file1})
+        doc2 = self.collection.get(where={"source": file2})
+        
+        if not doc1['documents']:
+            console.print(f"[red]Document '{file1}' not found[/red]")
+            return
+        if not doc2['documents']:
+            console.print(f"[red]Document '{file2}' not found[/red]")
+            return
+        
+        console.print(f"\n[bold]Comparing: {file1} vs {file2}[/bold]")
+        
+        with console.status("[bold green]Analyzing documents..."):
+            doc1_text = "\n".join(doc1['documents'][:5])
+            doc2_text = "\n".join(doc2['documents'][:5])
+            
+            prompt = f"""Compare these two documents comprehensively.
+    Structure your comparison as:
+    1. Main similarities
+    2. Key differences  
+    3. Unique content in each
+    4. Overall assessment
+
+    Document 1: {file1}
+    {doc1_text[:3000]}
+
+    Document 2: {file2}
+    {doc2_text[:3000]}"""
+            
+            response = self.model.generate_content(prompt)
+        
+        console.print(Panel(Markdown(response.text), title="Comparison Results", padding=(1, 2)))
+
+    def _handle_topics_command(self):
+        """Analyze topics across all documents"""
+        console.print("\n[bold]Analyzing topics in database...[/bold]")
+        
+        # Sample documents
+        with console.status("[bold green]Analyzing content..."):
+            results = self.collection.get(limit=50)  # Sample
+            
+            if not results['documents']:
+                console.print("[yellow]No documents to analyze[/yellow]")
+                return
+            
+            sample_text = "\n".join(results['documents'][:20])
+            
+            prompt = f"""Analyze this content and identify the 10 main topics or themes.
+    For each topic provide:
+    - Topic name
+    - Brief description
+    - Key terms associated with it
+    - Estimated prevalence
+
+    Content sample from {len(results['documents'])} documents:
+    {sample_text[:5000]}"""
+            
+            response = self.model.generate_content(prompt)
+        
+        console.print(Panel(Markdown(response.text), title="Topic Analysis", padding=(1, 2)))
+
+    def _handle_list_command(self, pattern: str = None):
+        """List documents with optional pattern filter"""
         all_data = self.collection.get()
         
-        # Calculate stats
-        total_chunks = len(all_data['ids'])
-        documents = {}
-        content_types = {'text': 0, 'image': 0}
-        file_types = {}
+        if not all_data['ids']:
+            console.print("[yellow]No documents indexed[/yellow]")
+            return
         
+        # Get unique documents
+        documents = {}
         for metadata in all_data['metadatas']:
             source = metadata.get('source', 'Unknown')
-            content_type = metadata.get('content_type', 'text')
-            file_type = metadata.get('file_type', 'unknown')
             
-            # Track content types
-            content_types[content_type] = content_types.get(content_type, 0) + 1
+            # Apply pattern filter if provided
+            if pattern and pattern.lower() not in source.lower():
+                continue
             
-            # Track file types
-            file_types[file_type] = file_types.get(file_type, 0) + 1
-            
-            # Track documents
             if source not in documents:
                 documents[source] = {
                     'chunks': 0,
-                    'content_type': content_type,
-                    'file_type': file_type
+                    'type': metadata.get('file_type', 'unknown'),
+                    'size': metadata.get('file_size', 0)
                 }
             documents[source]['chunks'] += 1
         
-        # Display comprehensive stats
-        stats_text = f"[bold]Database Statistics[/bold]\n\n"
-        stats_text += f"Total chunks: {total_chunks}\n"
-        stats_text += f"Total documents: {len(documents)}\n"
-        stats_text += f"Average chunks per document: {total_chunks / len(documents):.1f}\n\n"
+        if not documents:
+            console.print(f"[yellow]No documents matching '{pattern}'[/yellow]")
+            return
         
-        # Content type breakdown
-        stats_text += f"[bold]Content Types:[/bold]\n"
-        for ctype, count in content_types.items():
-            percentage = (count / total_chunks) * 100
-            stats_text += f"  {ctype.title()}: {count} chunks ({percentage:.1f}%)\n"
+        # Display as table
+        console.print(f"\n[bold]Documents{f' matching {pattern}' if pattern else ''}:[/bold]")
         
-        # File type breakdown
-        if file_types:
-            stats_text += f"\n[bold]File Types:[/bold]\n"
-            for ftype, count in sorted(file_types.items(), key=lambda x: x[1], reverse=True):
-                stats_text += f"  {ftype}: {count} files\n"
-        
-        console.print(Panel(stats_text, title="Database Statistics"))
-        
-        # Show document list (limited)
-        if len(documents) <= 15:
-            console.print("\n[bold]Indexed documents:[/bold]")
-            for doc, info in sorted(documents.items()):
-                icon = "📷" if info['content_type'] == 'image' else "📄"
-                console.print(f"  {icon} {doc} ({info['chunks']} chunks)")
-        else:
-            console.print(f"\n[dim]Showing first 15 of {len(documents)} documents[/dim]")
-            for doc, info in list(sorted(documents.items()))[:15]:
-                icon = "📷" if info['content_type'] == 'image' else "📄"
-                console.print(f"  {icon} {doc} ({info['chunks']} chunks)")
-    
-    def ask_single(self, question: str, filter_pattern: str = None, show_sources: bool = True) -> None:
-        """Single question mode - for CLI non-interactive use"""
-        result = self.chat(question, filter_pattern, show_sources)
-        
-        # Display answer
-        console.print(f"\n[bold green]Answer:[/bold green]")
-        console.print(Markdown(result['response']))
-        
-        # Display sources
-        if show_sources and result['sources']:
-            console.print()
-            console.print(self.format_sources_table(result['sources']))
-    
-    def export_conversation(self, filename: str = None) -> str:
-        """Export conversation history to file"""
-        if not self.history:
-            console.print("[yellow]No conversation history to export[/yellow]")
-            return None
-        
-        if not filename:
-            filename = f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        
-        # Format as markdown
-        content = "# Research Chat Export\n\n"
-        content += f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        content += "---\n\n"
-        
-        for entry in self.history:
-            timestamp = entry.get('timestamp', 'Unknown time')
-            role = "**You:**" if entry['role'] == 'user' else "**Assistant:**"
-            content += f"{role} _{timestamp}_\n\n{entry['content']}\n\n---\n\n"
-        
-        # Save to file
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        console.print(f"[green]✓ Conversation exported to {filename}[/green]")
-        return filename
-    
+        for i, (name, info) in enumerate(sorted(documents.items())[:20], 1):
+            size_mb = info['size'] / (1024 * 1024) if isinstance(info['size'], (int, float)) else 0
+            console.print(f"{i:2d}. [cyan]{name}[/cyan] ({info['type']}) - {info['chunks']} chunks, {size_mb:.1f}MB")
 
+    def _find_similar_filenames(self, partial: str) -> List[str]:
+        """Find filenames similar to the partial input"""
+        all_data = self.collection.get()
+        filenames = set()
+        
+        partial_lower = partial.lower()
+        
+        for metadata in all_data['metadatas']:
+            source = metadata.get('source', '')
+            if partial_lower in source.lower():
+                filenames.add(source)
+        
+        return sorted(filenames)
 
-# Standalone test function
-if __name__ == "__main__":
-    # Test the chat interface
-    try:
-        chat = ChatInterface()
+    def _show_help(self):
+        """Show detailed help for all commands"""
+        help_text = """[bold]Available Commands:[/bold]
+    [bold cyan]Chat Commands:[/bold cyan]
+    - Just type your question - Ask anything about your documents
+    - clear - Clear conversation history
+    - sources on/off - Toggle source citations
+    - stats - Show database statistics
+    - export - Save conversation to file
+    - help or ? - Show this help
+    - exit - Exit chat
+
+    [bold cyan]Search & Analysis:[/bold cyan]
+    - search <query> - Search all documents for specific content
+    - summarize <filename> - Generate AI summary of a document
+    - preview <filename> - Show preview of document content
+    - topics - Analyze main topics across all documents
+    - extract <filename> <topic> - Extract specific information
+
+    [bold cyan]Document Management:[/bold cyan]
+    - list [pattern] - List indexed documents (with optional filter)
+    - similar <filename> - Find documents similar to given one
+    - compare <file1> <file2> - Compare two documents
+    - focus <filename> - Focus chat on specific document
+    - focus clear - Remove document focus
+
+    [bold cyan]Filters:[/bold cyan]
+    - filter images - Show only image content
+    - filter text - Show only text documents
+    - clear filter - Remove all filters
+
+    [bold cyan]Tips:[/bold cyan]
+    - Use quotes for multi-word searches: search "machine learning"
+    - Partial filenames work: summarize report (matches report.pdf)
+    - Commands are case-insensitive
+    - Tab completion available for filenames (if enabled)"""
         
-        # Test single query
-        console.print("[bold]Testing single query...[/bold]")
-        result = chat.chat("What documents do you have about networking?")
-        console.print(f"Response: {result['response'][:200]}...")
-        console.print(f"Sources found: {len(result['sources'])}")
+        console.print(Panel(help_text, title="Chat Help", padding=(1, 2)))
         
-        # Test image-specific query
-        console.print("\n[bold]Testing image query...[/bold]")
-        result = chat.chat("Show me any diagrams or images", document_filter="images")
-        console.print(f"Image results: {result['response'][:200]}...")
-        
-    except Exception as e:
-        console.print(f"[red]Test failed: {e}[/red]")
+    
+    def show_collection_summary(self):
+        """Display a summary of the document collection"""
+        try:
+            # Get collection stats
+            count = self.collection.count()
+            
+            if count == 0:
+                console.print("[yellow]No documents indexed yet.[/yellow]")
+                console.print("\nGet started by running:")
+                console.print("  [cyan]corpus index ~/Documents/YourFolder[/cyan]")
+                return
+            
+            # Get all documents to show summary
+            all_data = self.collection.get()
+            
+            # Count unique documents
+            unique_docs = set()
+            doc_types = {}
+            total_size = 0
+            
+            for metadata in all_data['metadatas']:
+                source = metadata.get('source', 'Unknown')
+                unique_docs.add(source)
+                
+                # Count by file type
+                file_type = metadata.get('file_type', 'unknown')
+                doc_types[file_type] = doc_types.get(file_type, 0) + 1
+                
+                # Sum up size (only count once per document)
+                if source not in unique_docs or len(unique_docs) == 1:
+                    file_size = metadata.get('file_size', 0)
+                    if isinstance(file_size, str):
+                        try:
+                            file_size = int(file_size)
+                        except:
+                            file_size = 0
+                    total_size += file_size
+            
+            # Create summary panel
+            summary_text = f"""[bold cyan]Document Collection Summary[/bold cyan]
+            
+    📚 Total Documents: {len(unique_docs)}
+    📄 Total Chunks: {count}
+    💾 Total Size: {total_size / (1024*1024):.1f} MB
+
+    [bold]Document Types:[/bold]"""
+            
+            for doc_type, type_count in sorted(doc_types.items()):
+                summary_text += f"\n  • {doc_type}: {type_count} chunks"
+            
+            console.print(Panel(summary_text, title="Collection Overview", padding=(1, 2)))
+            
+            # Show recent documents if collection is small
+            if len(unique_docs) <= 10:
+                console.print("\n[bold]Indexed Documents:[/bold]")
+                for doc in sorted(unique_docs)[:10]:
+                    console.print(f"  • {doc}")
+            else:
+                console.print(f"\n[dim]Showing 10 most recent of {len(unique_docs)} documents:[/dim]")
+                # Get most recent documents
+                recent_docs = []
+                for metadata in all_data['metadatas']:
+                    source = metadata.get('source', 'Unknown')
+                    indexed_at = metadata.get('indexed_at', '')
+                    if source not in [d[0] for d in recent_docs]:
+                        recent_docs.append((source, indexed_at))
+                
+                # Sort by date and show top 10
+                recent_docs.sort(key=lambda x: x[1], reverse=True)
+                for doc, _ in recent_docs[:10]:
+                    console.print(f"  • {doc}")
+            
+        except Exception as e:
+            console.print(f"[red]Error getting collection summary: {e}[/red]")
