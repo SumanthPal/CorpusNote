@@ -85,7 +85,6 @@ env\Scripts\activate     # Windows
 corpus --help
 corpus config setup
 
-alias corpus='cd /path/to/CorpusNote && source env/bin/activate && corpus'
 ```
 
 ### Making Corpus Available Globally

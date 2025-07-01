@@ -636,9 +636,9 @@ Please provide a comprehensive answer based on the above context:"""
         # Show metadata
         metadata = results['metadatas'][0]
         console.print(f"\n[bold]Document Preview: {filename}[/bold]")
-        console.print(f"[dim]Type: {metadata.get('file_type', 'unknown')} | ")
+        console.print(f"Type: {metadata.get('file_type', 'unknown')} | ")
         console.print(f"Total chunks: {metadata.get('total_chunks', 'unknown')} | ")
-        console.print(f"Indexed: {metadata.get('indexed_at', 'unknown')}[/dim]\n")
+        console.print(f"Indexed: {metadata.get('indexed_at', 'unknown')}\n")
         
         # Show first chunk
         preview = results['documents'][0]
