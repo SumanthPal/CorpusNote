@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configuration management for Corpus CLI"""
+"""Configuration management for Corpus CLI with Model Integration"""
 
 import os
 import json
@@ -31,8 +31,9 @@ class ConfigManager:
         self.defaults = {
             # API Keys (from env)
             "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", os.getenv("GEMINI", "")),
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
             
-            # Models
+            # Legacy model config (for backward compatibility)
             "GEMINI_MODEL": "gemini-1.5-flash",
             "GEMINI_IMG_MODEL": "gemini-pro-vision",
             
@@ -107,8 +108,8 @@ class ConfigManager:
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value"""
         # Check environment first for API keys
-        if key == "GEMINI_API_KEY":
-            env_value = os.getenv("GEMINI_API_KEY", os.getenv("GEMINI"))
+        if key in ["GEMINI_API_KEY", "OPENAI_API_KEY"]:
+            env_value = os.getenv(key)
             if env_value:
                 return env_value
         
@@ -155,8 +156,8 @@ class ConfigManager:
         
         # Group settings
         groups = {
-            "API Keys": ["GEMINI_API_KEY"],
-            "Models": ["GEMINI_MODEL", "GEMINI_IMG_MODEL"],
+            "API Keys": ["GEMINI_API_KEY", "OPENAI_API_KEY"],
+            "Legacy Models": ["GEMINI_MODEL", "GEMINI_IMG_MODEL"],
             "Paths": ["DB_PATH", "DIAGRAMS_PATH", "COLLECTION_NAME"],
             "Processing": ["CHUNK_SIZE", "CHUNK_OVERLAP", "MIN_CHUNK_LENGTH", "MAX_FILE_SIZE_MB"],
             "Search": ["MAX_RESULTS", "MAX_MEMORY"]
@@ -166,7 +167,7 @@ class ConfigManager:
             table.add_row(f"[bold]{group_name}[/bold]", "", "")
             for key in keys:
                 value = self.get(key)
-                if key == "GEMINI_API_KEY" and value and not show_all:
+                if key in ["GEMINI_API_KEY", "OPENAI_API_KEY"] and value and not show_all:
                     display_value = value[:8] + "..." + value[-4:] if len(value) > 12 else "***"
                 else:
                     display_value = str(value)
@@ -183,46 +184,49 @@ class ConfigManager:
         
         if not show_all:
             console.print("\n[dim]Use 'corpus config show --all' to see full lists[/dim]")
+            console.print("[dim]Note: Model configuration is now managed via 'corpus models setup'[/dim]")
     
     def interactive_setup(self) -> None:
-        """Interactive configuration setup"""
+        """Enhanced interactive configuration setup with model integration"""
         console.print(Panel.fit(
             "[bold]Corpus Configuration Setup[/bold]\n"
-            "Let's configure your Corpus CLI installation.",
+            "Configure your Corpus CLI installation including AI models.",
             border_style="green"
         ))
         
         updates = {}
         
-        # API Key
-        console.print("\n[bold]1. API Configuration[/bold]")
-        current_key = self.get("GEMINI_API_KEY")
-        if current_key:
-            console.print(f"Current Gemini API key: {current_key[:8]}...{current_key[-4:]}")
-            if Confirm.ask("Update Gemini API key?", default=False):
-                key = Prompt.ask("Enter your Gemini API key", password=True)
-                updates["GEMINI_API_KEY"] = key
-                # Also save to .env file
-                set_key(self.env_file, "GEMINI_API_KEY", key)
-        else:
-            console.print("[yellow]No Gemini API key found[/yellow]")
-            key = Prompt.ask("Enter your Gemini API key", password=True)
-            updates["GEMINI_API_KEY"] = key
-            set_key(self.env_file, "GEMINI_API_KEY", key)
+        # 1. Basic Configuration
+        console.print("\n[bold]1. Basic Configuration[/bold]")
+        if Confirm.ask("Configure basic settings (paths, processing)?", default=True):
+            self._configure_basic_settings(updates)
         
-        # Model selection
-        console.print("\n[bold]2. Model Selection[/bold]")
-        models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-        current_model = self.get("GEMINI_MODEL")
-        console.print(f"Current model: {current_model}")
-        if Confirm.ask("Change model?", default=False):
-            for i, model in enumerate(models, 1):
-                console.print(f"  {i}. {model}")
-            choice = IntPrompt.ask("Select model", default=1, choices=[str(i) for i in range(1, len(models)+1)])
-            updates["GEMINI_MODEL"] = models[int(choice)-1]
+        # 2. API Keys
+        console.print("\n[bold]2. API Keys[/bold]")
+        if Confirm.ask("Configure API keys?", default=True):
+            self._configure_api_keys(updates)
+        
+        # 3. Model Setup
+        console.print("\n[bold]3. AI Model Setup[/bold]")
+        if Confirm.ask("Setup AI models?", default=True):
+            self._setup_models()
+        
+        # Apply basic config updates
+        if updates:
+            self.update(updates)
+            console.print("\n[green]✓ Configuration updated successfully![/green]")
+        
+        console.print("\n[bold]Setup Complete![/bold]")
+        console.print("Next steps:")
+        console.print("• Run 'corpus models' to check model status")
+        console.print("• Run 'corpus index ~/Documents' to index your documents")
+        console.print("• Run 'corpus chat' to start chatting")
+    
+    def _configure_basic_settings(self, updates: Dict[str, Any]):
+        """Configure basic settings like paths and processing"""
+        console.print("\n[cyan]Basic Settings Configuration[/cyan]")
         
         # Paths
-        console.print("\n[bold]3. Storage Paths[/bold]")
         if Confirm.ask("Configure storage paths?", default=False):
             db_path = Prompt.ask("Database path", default=self.get("DB_PATH"))
             updates["DB_PATH"] = db_path
@@ -231,7 +235,6 @@ class ConfigManager:
             updates["DIAGRAMS_PATH"] = diagram_path
         
         # Processing parameters
-        console.print("\n[bold]4. Processing Parameters[/bold]")
         if Confirm.ask("Configure processing parameters?", default=False):
             chunk_size = IntPrompt.ask("Chunk size", default=self.get("CHUNK_SIZE"))
             updates["CHUNK_SIZE"] = chunk_size
@@ -241,13 +244,117 @@ class ConfigManager:
             
             max_file_size = IntPrompt.ask("Max file size (MB)", default=self.get("MAX_FILE_SIZE_MB"))
             updates["MAX_FILE_SIZE_MB"] = max_file_size
+    
+    def _configure_api_keys(self, updates: Dict[str, Any]):
+        """Configure API keys"""
+        console.print("\n[cyan]API Keys Configuration[/cyan]")
         
-        # Apply updates
-        if updates:
-            self.update(updates)
-            console.print("\n[green]✓ Configuration updated successfully![/green]")
+        # OpenAI API Key
+        current_openai = self.get("OPENAI_API_KEY")
+        if current_openai:
+            console.print(f"Current OpenAI API key: {current_openai[:8]}...{current_openai[-4:]}")
+            if Confirm.ask("Update OpenAI API key?", default=False):
+                key = Prompt.ask("Enter your OpenAI API key", password=True)
+                updates["OPENAI_API_KEY"] = key
+                set_key(self.env_file, "OPENAI_API_KEY", key)
         else:
-            console.print("\n[yellow]No changes made[/yellow]")
+            if Confirm.ask("Add OpenAI API key?", default=True):
+                key = Prompt.ask("Enter your OpenAI API key", password=True)
+                updates["OPENAI_API_KEY"] = key
+                set_key(self.env_file, "OPENAI_API_KEY", key)
+        
+        # Gemini API Key
+        current_gemini = self.get("GEMINI_API_KEY")
+        if current_gemini:
+            console.print(f"Current Gemini API key: {current_gemini[:8]}...{current_gemini[-4:]}")
+            if Confirm.ask("Update Gemini API key?", default=False):
+                key = Prompt.ask("Enter your Gemini API key", password=True)
+                updates["GEMINI_API_KEY"] = key
+                set_key(self.env_file, "GEMINI_API_KEY", key)
+        else:
+            if Confirm.ask("Add Gemini API key?", default=True):
+                key = Prompt.ask("Enter your Gemini API key", password=True)
+                updates["GEMINI_API_KEY"] = key
+                set_key(self.env_file, "GEMINI_API_KEY", key)
+    
+    def _setup_models(self):
+        """Setup AI models through the models manager"""
+        console.print("\n[cyan]AI Model Setup[/cyan]")
+        console.print("This will configure your AI models for Corpus.")
+        
+        try:
+            # Import here to avoid circular imports
+            from corpus.models_manager import ModelsManager
+            
+            models_manager = ModelsManager()
+            
+            console.print("\n[bold]Available Model Types:[/bold]")
+            console.print("1. OpenAI (GPT-4, GPT-3.5) - Cloud")
+            console.print("2. Google Gemini - Cloud") 
+            console.print("3. Phi-3 via Ollama - Local")
+            console.print("4. Phi-3 via vLLM - Local/Distributed")
+            console.print("5. Full interactive setup")
+            
+            choice = Prompt.ask("Choose setup option (1-5)", choices=["1", "2", "3", "4", "5"])
+            
+            if choice == "1":
+                self._quick_setup_openai(models_manager)
+            elif choice == "2":
+                self._quick_setup_gemini(models_manager)
+            elif choice == "3":
+                models_manager.setup_phi3_ollama()
+            elif choice == "4":
+                models_manager.setup_phi3_vllm()
+            elif choice == "5":
+                models_manager.interactive_setup()
+            
+        except ImportError as e:
+            console.print(f"[red]Error importing models manager: {e}[/red]")
+            console.print("[yellow]You can setup models later with 'corpus models setup'[/yellow]")
+    
+    def _quick_setup_openai(self, models_manager):
+        """Quick setup for OpenAI models"""
+        openai_key = self.get("OPENAI_API_KEY")
+        if not openai_key:
+            console.print("[red]OpenAI API key not found. Please configure it first.[/red]")
+            return
+        
+        # Configure OpenAI models
+        for model_name in models_manager.models:
+            model = models_manager.models[model_name]
+            if hasattr(model, 'config') and model.config.model_type.value == 'openai':
+                model.config.api_key = openai_key
+        
+        models_manager.save_configurations()
+        
+        # Set active model to GPT-4 if available
+        if 'gpt-4' in models_manager.models:
+            models_manager.set_active_model('gpt-4')
+        elif 'gpt-3.5-turbo' in models_manager.models:
+            models_manager.set_active_model('gpt-3.5-turbo')
+        
+        console.print("[green]✓ OpenAI models configured[/green]")
+    
+    def _quick_setup_gemini(self, models_manager):
+        """Quick setup for Gemini models"""
+        gemini_key = self.get("GEMINI_API_KEY")
+        if not gemini_key:
+            console.print("[red]Gemini API key not found. Please configure it first.[/red]")
+            return
+        
+        # Configure Gemini models
+        for model_name in models_manager.models:
+            model = models_manager.models[model_name]
+            if hasattr(model, 'config') and model.config.model_type.value == 'gemini':
+                model.config.api_key = gemini_key
+        
+        models_manager.save_configurations()
+        
+        # Set active model to Gemini Pro if available
+        if 'gemini-pro' in models_manager.models:
+            models_manager.set_active_model('gemini-pro')
+        
+        console.print("[green]✓ Gemini models configured[/green]")
     
     def export_config(self, format: str = "json") -> str:
         """Export configuration to string"""
@@ -286,10 +393,6 @@ class ConfigManager:
         """Validate configuration and return list of issues"""
         issues = []
         
-        # Check API key
-        if not self.get("GEMINI_API_KEY"):
-            issues.append("GEMINI_API_KEY is not set")
-        
         # Check paths exist
         db_path = Path(self.get("DB_PATH"))
         if not db_path.parent.exists():
@@ -308,6 +411,10 @@ class ConfigManager:
         
         if self.get("CHUNK_OVERLAP", 0) >= self.get("CHUNK_SIZE", 1):
             issues.append("CHUNK_OVERLAP should be less than CHUNK_SIZE")
+        
+        # Note about models
+        if not self.get("OPENAI_API_KEY") and not self.get("GEMINI_API_KEY"):
+            issues.append("No API keys configured - run 'corpus models setup' to configure AI models")
         
         return issues
 
@@ -404,7 +511,7 @@ def create_config_commands(app: typer.Typer):
     
     @config_app.command("setup")
     def setup_config():
-        """Run interactive configuration setup"""
+        """Run interactive configuration setup including models"""
         config = get_config()
         config.interactive_setup()
     
@@ -450,4 +557,3 @@ def create_config_commands(app: typer.Typer):
 if __name__ == "__main__":
     config = get_config()
     config.show()
-
