@@ -196,7 +196,7 @@ class FileParser:
         console.print(f"[dim]Text length for {file_name}: {len(text)} characters[/dim]")
         
         # Split into sentences for better chunking
-        # Simple sentence splitter (you can make this more sophisticated)
+        # Simple sentence splitter 
         sentences = re.split(r'(?<=[.!?])\s+', text)
         
         chunks = []
