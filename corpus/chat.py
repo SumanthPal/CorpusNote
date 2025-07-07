@@ -276,6 +276,7 @@ Please provide a comprehensive answer based on the above context:"""
         
         return table
     
+    
     def chat(self, query: str, document_filter: str = None, show_sources: bool = True) -> Dict:
         """Main chat function - single query/response"""
         if not self.check_collection():
