@@ -1,4 +1,4 @@
-# models_manager.py
+# models_manager.py - Integrated with Config Manager
 from typing import Dict, List, Optional, Any
 import json
 from pathlib import Path
@@ -12,6 +12,23 @@ from .models import (
 )
 
 console = Console()
+
+class PlaceholderModel(BaseModel):
+    """Placeholder model for unconfigured models"""
+    
+    def __init__(self, config: ModelConfig):
+        self.config = config
+        self.name = config.name
+        self.model_id = config.model_id
+    
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+        raise Exception(f"Model {self.name} is not configured. Please set up API key first.")
+    
+    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs):
+        raise Exception(f"Model {self.name} is not configured. Please set up API key first.")
+    
+    def is_available(self) -> bool:
+        return False
 
 class ModelsManager:
     """Manages all available models and their configurations"""
@@ -27,18 +44,38 @@ class ModelsManager:
         """Ensure config directory exists"""
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
     
+    def _get_api_key(self, model_type: str) -> Optional[str]:
+        """Get API key from config manager"""
+        try:
+            from corpus.config_manager import get_config
+            config = get_config()
+            
+            if model_type == "openai":
+                return config.get("OPENAI_API_KEY")
+            elif model_type == "gemini":
+                return config.get("GEMINI_API_KEY")
+            return None
+        except ImportError:
+            console.print("[yellow]Config manager not available, using stored keys[/yellow]")
+            return None
+    
     def load_configurations(self):
         """Load model configurations from file"""
+        console.print(f"[blue]Loading config from: {self.config_file}[/blue]")
+        
         if self.config_file.exists():
             try:
                 with open(self.config_file, 'r') as f:
                     data = json.load(f)
+                    console.print(f"[blue]Config data loaded: {list(data.get('models', {}).keys())}[/blue]")
                     self._load_models_from_config(data)
                     self.active_model = data.get("active_model")
+                    console.print(f"[blue]Models after loading: {list(self.models.keys())}[/blue]")
             except Exception as e:
                 console.print(f"[red]Error loading model config: {e}[/red]")
                 self._create_default_config()
         else:
+            console.print("[yellow]Config file doesn't exist, creating default...[/yellow]")
             self._create_default_config()
     
     def _create_default_config(self):
@@ -52,7 +89,6 @@ class ModelsManager:
                     "model_type": "openai",
                     "model_id": "gpt-4",
                     "compute_location": "cloud",
-                    "api_key": None,  # User needs to set this
                     "max_tokens": 4096,
                     "context_length": 8192
                 },
@@ -61,16 +97,14 @@ class ModelsManager:
                     "model_type": "openai",
                     "model_id": "gpt-3.5-turbo",
                     "compute_location": "cloud",
-                    "api_key": None,
                     "max_tokens": 4096,
                     "context_length": 4096
                 },
                 "gemini-pro": {
                     "name": "gemini-pro",
                     "model_type": "gemini",
-                    "model_id": "gemini-pro",
+                    "model_id": "gemini-1.5-flash",
                     "compute_location": "cloud",
-                    "api_key": None,
                     "max_tokens": 2048,
                     "context_length": 32768
                 },
@@ -97,21 +131,33 @@ class ModelsManager:
                     "tensor_parallel_size": 1
                 }
             },
-            "active_model": "phi3-mini-ollama"
+            "active_model": "gemini-pro"
         }
         
         self.save_configurations(default_configs)
+        # After saving, load the models
+        self._load_models_from_config(default_configs)
     
     def _load_models_from_config(self, config_data: Dict):
         """Load models from configuration data"""
+        console.print(f"[blue]Loading models from config data...[/blue]")
+        
         for model_name, model_data in config_data.get("models", {}).items():
+            console.print(f"[blue]Processing model: {model_name} (type: {model_data.get('model_type')})[/blue]")
+            
             try:
+                # Get API key from config manager for cloud models
+                api_key = None
+                if model_data.get("model_type") in ["openai", "gemini"]:
+                    api_key = self._get_api_key(model_data["model_type"])
+                    console.print(f"[blue]API key for {model_name}: {'Found' if api_key else 'Not found'}[/blue]")
+                
                 model_config = ModelConfig(
                     name=model_data["name"],
                     model_type=ModelType(model_data["model_type"]),
                     model_id=model_data["model_id"],
                     compute_location=ComputeLocation(model_data["compute_location"]),
-                    api_key=model_data.get("api_key"),
+                    api_key=api_key,  # Use API key from config manager
                     base_url=model_data.get("base_url"),
                     host=model_data.get("host", "localhost"),
                     port=model_data.get("port", 8000),
@@ -124,23 +170,108 @@ class ModelsManager:
                     quantization=model_data.get("quantization")
                 )
                 
+                console.print(f"[blue]Created config for {model_name}, API key present: {bool(model_config.api_key)}[/blue]")
+                
                 # Create model instance based on type
                 if model_config.model_type == ModelType.OPENAI:
-                    self.models[model_name] = OpenAIModel(model_config)
+                    if model_config.api_key:
+                        console.print(f"[green]Creating OpenAI model: {model_name}[/green]")
+                        self.models[model_name] = OpenAIModel(model_config)
+                    else:
+                        console.print(f"[yellow]Creating placeholder for OpenAI model: {model_name}[/yellow]")
+                        self.models[model_name] = PlaceholderModel(model_config)
+                        
                 elif model_config.model_type == ModelType.GEMINI:
-                    self.models[model_name] = GeminiModel(model_config)
+                    if model_config.api_key:
+                        console.print(f"[green]Creating Gemini model: {model_name}[/green]")
+                        self.models[model_name] = GeminiModel(model_config)
+                    else:
+                        console.print(f"[yellow]Creating placeholder for Gemini model: {model_name}[/yellow]")
+                        self.models[model_name] = PlaceholderModel(model_config)
+                        
                 elif model_config.model_type == ModelType.PHI_OLLAMA:
+                    console.print(f"[green]Creating Phi Ollama model: {model_name}[/green]")
                     self.models[model_name] = PhiOllamaModel(model_config)
+                    
                 elif model_config.model_type == ModelType.PHI_VLLM:
+                    console.print(f"[green]Creating Phi vLLM model: {model_name}[/green]")
                     self.models[model_name] = PhiVLLMModel(model_config)
+                    
+                console.print(f"[green]✓ Successfully loaded model: {model_name}[/green]")
                     
             except Exception as e:
                 console.print(f"[red]Error loading model {model_name}: {e}[/red]")
+                import traceback
+                console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        
+        console.print(f"[blue]Final models loaded: {list(self.models.keys())}[/blue]")
+    
+    def refresh_models(self):
+        """Refresh all models to pick up new API keys from config"""
+        console.print("[cyan]Refreshing models with current API keys...[/cyan]")
+        
+        # Get current API keys
+        openai_key = self._get_api_key("openai")
+        gemini_key = self._get_api_key("gemini")
+        
+        updated_count = 0
+        
+        for model_name, model in list(self.models.items()):
+            model_type = model.config.model_type
+            
+            if model_type == ModelType.OPENAI:
+                if openai_key and isinstance(model, PlaceholderModel):
+                    # Convert placeholder to real model
+                    model.config.api_key = openai_key
+                    try:
+                        self.models[model_name] = OpenAIModel(model.config)
+                        console.print(f"[green]✓ Activated OpenAI model: {model_name}[/green]")
+                        updated_count += 1
+                    except Exception as e:
+                        console.print(f"[red]Failed to activate {model_name}: {e}[/red]")
+                elif openai_key and hasattr(model, 'headers'):
+                    # Update existing model
+                    model.config.api_key = openai_key
+                    model.headers = {
+                        "Authorization": f"Bearer {openai_key}",
+                        "Content-Type": "application/json"
+                    }
+                    console.print(f"[green]✓ Updated OpenAI model: {model_name}[/green]")
+                    updated_count += 1
+                    
+            elif model_type == ModelType.GEMINI:
+                if gemini_key and isinstance(model, PlaceholderModel):
+                    # Convert placeholder to real model
+                    model.config.api_key = gemini_key
+                    try:
+                        self.models[model_name] = GeminiModel(model.config)
+                        console.print(f"[green]✓ Activated Gemini model: {model_name}[/green]")
+                        updated_count += 1
+                    except Exception as e:
+                        console.print(f"[red]Failed to activate {model_name}: {e}[/red]")
+                elif gemini_key and hasattr(model, 'model'):
+                    # Update existing model
+                    model.config.api_key = gemini_key
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=gemini_key)
+                        model.model = genai.GenerativeModel(model.config.model_id)
+                        console.print(f"[green]✓ Updated Gemini model: {model_name}[/green]")
+                        updated_count += 1
+                    except Exception as e:
+                        console.print(f"[red]Failed to update {model_name}: {e}[/red]")
+        
+        if updated_count > 0:
+            console.print(f"[green]✓ Refreshed {updated_count} models[/green]")
+        else:
+            console.print("[yellow]No models needed updating[/yellow]")
     
     def save_configurations(self, config_data: Optional[Dict] = None):
-        """Save model configurations to file"""
+        """Save model configurations to file (without API keys)"""
+        console.print(f"[blue]Saving configurations to: {self.config_file}[/blue]")
+        
         if config_data is None:
-            # Build config from current models
+            # Build config from current models (excluding API keys)
             config_data = {
                 "models": {},
                 "active_model": self.active_model
@@ -152,7 +283,6 @@ class ModelsManager:
                     "model_type": model.config.model_type.value,
                     "model_id": model.config.model_id,
                     "compute_location": model.config.compute_location.value,
-                    "api_key": model.config.api_key,
                     "base_url": model.config.base_url,
                     "host": model.config.host,
                     "port": model.config.port,
@@ -163,11 +293,13 @@ class ModelsManager:
                     "gpu_memory_utilization": model.config.gpu_memory_utilization,
                     "tensor_parallel_size": model.config.tensor_parallel_size,
                     "quantization": model.config.quantization
+                    # Note: API keys are NOT saved here - they come from config manager
                 }
         
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
+            console.print(f"[green]✓ Configuration saved successfully[/green]")
         except Exception as e:
             console.print(f"[red]Error saving model config: {e}[/red]")
     
@@ -230,11 +362,17 @@ class ModelsManager:
     def get_active_model(self) -> Optional[BaseModel]:
         """Get the currently active model"""
         if self.active_model and self.active_model in self.models:
-            return self.models[self.active_model]
+            model = self.models[self.active_model]
+            # Check if it's a placeholder model
+            if isinstance(model, PlaceholderModel):
+                return None
+            return model
         return None
     
     def list_models(self) -> Table:
         """List all available models in a table"""
+        console.print(f"[blue]Listing {len(self.models)} models[/blue]")
+        
         table = Table(title="Available Models", show_lines=True)
         table.add_column("Name", style="cyan", no_wrap=True)
         table.add_column("Type", style="magenta")
@@ -244,13 +382,25 @@ class ModelsManager:
         table.add_column("Active", style="red")
         
         for name, model in self.models.items():
-            status = "🟢 Available" if model.is_available() else "🔴 Unavailable"
+            console.print(f"[blue]Processing model for table: {name} (type: {type(model).__name__})[/blue]")
+            
+            if isinstance(model, PlaceholderModel):
+                status = "🔧 Needs Setup"
+                available = False
+            else:
+                try:
+                    available = model.is_available()
+                    status = "🟢 Available" if available else "🔴 Unavailable"
+                except Exception as e:
+                    console.print(f"[yellow]Error checking availability for {name}: {e}[/yellow]")
+                    status = "❓ Unknown"
+            
             active = "✓" if name == self.active_model else ""
             
             table.add_row(
                 name,
                 model.config.model_type.value,
-                model.model_id,
+                model.model_id if hasattr(model, 'model_id') else model.config.model_id,
                 model.config.compute_location.value,
                 status,
                 active
@@ -260,12 +410,19 @@ class ModelsManager:
     
     def check_all_models(self):
         """Check availability of all models"""
-        console.print("\n[bold]Checking model availability...[/bold]")
+        console.print(f"\n[bold]Checking availability of {len(self.models)} models...[/bold]")
         
         for name, model in self.models.items():
             with console.status(f"Checking {name}..."):
-                available = model.is_available()
-                status = "🟢 Available" if available else "🔴 Unavailable"
+                if isinstance(model, PlaceholderModel):
+                    status = "🔧 Needs Setup"
+                else:
+                    try:
+                        available = model.is_available()
+                        status = "🟢 Available" if available else "🔴 Unavailable"
+                    except Exception as e:
+                        console.print(f"[yellow]Error checking {name}: {e}[/yellow]")
+                        status = "❓ Unknown"
                 console.print(f"{name}: {status}")
     
     def setup_phi3_ollama(self) -> bool:
@@ -339,66 +496,54 @@ class ModelsManager:
         """Interactive model setup wizard"""
         console.print(Panel.fit(
             "[bold green]Corpus Models Setup Wizard[/bold green]\n"
-            "Configure your AI models for Corpus CLI",
+            "Configure your AI models for Corpus CLI\n\n"
+            "[yellow]Note: API keys are managed through 'corpus config setup'[/yellow]",
             border_style="green"
         ))
         
         while True:
             console.print("\n[bold]Setup Options:[/bold]")
-            console.print("1. Configure OpenAI")
-            console.print("2. Configure Gemini")
-            console.print("3. Setup Phi-3 via Ollama")
-            console.print("4. Setup Phi-3 via vLLM")
-            console.print("5. Add custom model")
-            console.print("6. Set active model")
-            console.print("7. View all models")
-            console.print("8. Exit")
+            console.print("1. Check API keys and refresh models")
+            console.print("2. Setup Phi-3 via Ollama")
+            console.print("3. Setup Phi-3 via vLLM")
+            console.print("4. Set active model")
+            console.print("5. View all models")
+            console.print("6. Exit")
             
-            choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5", "6", "7", "8"])
+            choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5", "6"])
             
             if choice == "1":
-                self._configure_openai()
+                self._check_and_configure_api_keys()
             elif choice == "2":
-                self._configure_gemini()
-            elif choice == "3":
                 self.setup_phi3_ollama()
-            elif choice == "4":
+            elif choice == "3":
                 self.setup_phi3_vllm()
-            elif choice == "5":
-                self._add_custom_model()
-            elif choice == "6":
+            elif choice == "4":
                 self._set_active_model_interactive()
-            elif choice == "7":
+            elif choice == "5":
                 console.print(self.list_models())
-            elif choice == "8":
+            elif choice == "6":
                 break
     
-    def _configure_openai(self):
-        """Configure OpenAI models"""
-        api_key = Prompt.ask("Enter OpenAI API key", password=True)
+    def _check_and_configure_api_keys(self):
+        """Check and configure API keys through config manager"""
+        console.print("\n[cyan]Checking API Key Configuration[/cyan]")
         
-        for model_name in self.models:
-            if self.models[model_name].config.model_type == ModelType.OPENAI:
-                self.models[model_name].config.api_key = api_key
+        openai_key = self._get_api_key("openai")
+        gemini_key = self._get_api_key("gemini")
         
-        self.save_configurations()
-        console.print("[green]✓ OpenAI API key configured[/green]")
-    
-    def _configure_gemini(self):
-        """Configure Gemini models"""
-        api_key = Prompt.ask("Enter Gemini API key", password=True)
+        console.print(f"OpenAI API Key: {'✓ Configured' if openai_key else '✗ Missing'}")
+        console.print(f"Gemini API Key: {'✓ Configured' if gemini_key else '✗ Missing'}")
         
-        for model_name in self.models:
-            if self.models[model_name].config.model_type == ModelType.GEMINI:
-                self.models[model_name].config.api_key = api_key
+        if not openai_key or not gemini_key:
+            console.print("\n[yellow]Missing API keys detected.[/yellow]")
+            console.print("Please run: [cyan]corpus config setup[/cyan]")
+            console.print("Or set them manually:")
+            console.print("  [dim]export OPENAI_API_KEY='your-key-here'[/dim]")
+            console.print("  [dim]export GEMINI_API_KEY='your-key-here'[/dim]")
         
-        self.save_configurations()
-        console.print("[green]✓ Gemini API key configured[/green]")
-    
-    def _add_custom_model(self):
-        """Add a custom model configuration"""
-        # This would be a more complex interactive flow
-        console.print("[yellow]Custom model configuration not implemented yet[/yellow]")
+        # Refresh models with current keys
+        self.refresh_models()
     
     def _set_active_model_interactive(self):
         """Interactive active model selection"""
@@ -409,14 +554,23 @@ class ModelsManager:
         console.print("\n[bold]Available models:[/bold]")
         model_names = list(self.models.keys())
         for i, name in enumerate(model_names, 1):
-            status = "🟢" if self.models[name].is_available() else "🔴"
+            model = self.models[name]
+            if isinstance(model, PlaceholderModel):
+                status = "🔧"
+            else:
+                status = "🟢" if model.is_available() else "🔴"
             active = " (active)" if name == self.active_model else ""
             console.print(f"{i}. {status} {name}{active}")
         
         try:
             choice = int(Prompt.ask("Select model number")) - 1
             if 0 <= choice < len(model_names):
-                self.set_active_model(model_names[choice])
+                selected_model = self.models[model_names[choice]]
+                if isinstance(selected_model, PlaceholderModel):
+                    console.print("[yellow]This model needs to be configured first[/yellow]")
+                    console.print("Run: [cyan]corpus config setup[/cyan] to configure API keys")
+                else:
+                    self.set_active_model(model_names[choice])
             else:
                 console.print("[red]Invalid choice[/red]")
         except ValueError:

@@ -1,5 +1,4 @@
-
-# models.py
+# models.py - Fixed Version
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Generator, List
 from dataclasses import dataclass
@@ -11,7 +10,6 @@ import time
 import subprocess
 import threading
 from urllib.parse import urlparse
-import google.generativeai as genai
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -21,16 +19,16 @@ class ModelType(Enum):
     """Supported model types"""
     OPENAI = "openai"
     GEMINI = "gemini"
-    PHI_OLLAMA = "phi_ollama"          # Phi-3 via Ollama
-    PHI_VLLM = "phi_vllm"              # Phi-3 via vLLM
-    VLLM_REMOTE = "vllm_remote"        # Remote vLLM server
-    OPENAI_COMPATIBLE = "openai_compatible"  # Any OpenAI API compatible
+    PHI_OLLAMA = "phi_ollama"
+    PHI_VLLM = "phi_vllm"
+    VLLM_REMOTE = "vllm_remote"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 class ComputeLocation(Enum):
     """Where the compute happens"""
-    LOCAL = "local"           # This machine
-    LAN = "lan"              # Local network device
-    CLOUD = "cloud"          # Internet/cloud services
+    LOCAL = "local"
+    LAN = "lan"
+    CLOUD = "cloud"
 
 @dataclass
 class ModelConfig:
@@ -50,9 +48,9 @@ class ModelConfig:
     supports_streaming: bool = True
     supports_system_prompt: bool = True
     timeout: int = 30
-    gpu_memory_utilization: float = 0.8  # For vLLM
-    tensor_parallel_size: int = 1        # For vLLM
-    quantization: Optional[str] = None   # For vLLM (awq, gptq, etc.)
+    gpu_memory_utilization: float = 0.8
+    tensor_parallel_size: int = 1
+    quantization: Optional[str] = None
 
 class BaseModel(ABC):
     """Abstract base class for all model implementations"""
@@ -95,16 +93,29 @@ class OpenAIModel(BaseModel):
     
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        if not config.api_key:
-            raise ValueError(f"API key required for OpenAI model {config.name}")
-        self.headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json"
-        }
+        
+        # Don't require API key during initialization for debugging
+        self.api_key = config.api_key
         self.api_url = config.base_url or "https://api.openai.com/v1"
+        
+        # Initialize headers if API key is available
+        if self.api_key:
+            self.headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+        else:
+            self.headers = {"Content-Type": "application/json"}
+    
+    def _check_api_key(self):
+        """Check if API key is available"""
+        if not self.api_key:
+            raise ValueError(f"API key required for OpenAI model {self.config.name}")
     
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         """Generate response using OpenAI API"""
+        self._check_api_key()
+        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -132,6 +143,8 @@ class OpenAIModel(BaseModel):
     
     def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
         """Generate streaming response using OpenAI API"""
+        self._check_api_key()
+        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -174,6 +187,9 @@ class OpenAIModel(BaseModel):
     
     def is_available(self) -> bool:
         """Check if OpenAI API is available"""
+        if not self.api_key:
+            return False
+            
         try:
             response = requests.get(
                 f"{self.api_url}/models",
@@ -189,19 +205,37 @@ class GeminiModel(BaseModel):
     
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        if not config.api_key:
-            raise ValueError(f"API key required for Gemini model {config.name}")
         
-        genai.configure(api_key=config.api_key)
-        self.model = genai.GenerativeModel(config.model_id)
+        self.api_key = config.api_key
+        self.model = None
+        
+        # Only initialize if API key is available
+        if self.api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel(config.model_id)
+            except ImportError:
+                console.print("[yellow]google-generativeai not installed. Run: pip install google-generativeai[/yellow]")
+                raise ValueError("google-generativeai package required for Gemini models")
+            except Exception as e:
+                console.print(f"[yellow]Failed to initialize Gemini model: {e}[/yellow]")
+    
+    def _check_api_key(self):
+        """Check if API key is available"""
+        if not self.api_key or not self.model:
+            raise ValueError(f"API key and model initialization required for Gemini model {self.config.name}")
     
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         """Generate response using Gemini API"""
+        self._check_api_key()
+        
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\nUser: {prompt}\nAssistant:"
         
         try:
+            import google.generativeai as genai
             response = self.model.generate_content(
                 full_prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -216,11 +250,14 @@ class GeminiModel(BaseModel):
     
     def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
         """Generate streaming response using Gemini API"""
+        self._check_api_key()
+        
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\nUser: {prompt}\nAssistant:"
         
         try:
+            import google.generativeai as genai
             response = self.model.generate_content(
                 full_prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -238,6 +275,9 @@ class GeminiModel(BaseModel):
     
     def is_available(self) -> bool:
         """Check if Gemini API is available"""
+        if not self.api_key or not self.model:
+            return False
+            
         try:
             test_response = self.model.generate_content("Hi")
             return bool(test_response.text)
@@ -269,7 +309,7 @@ class PhiOllamaModel(BaseModel):
             response = requests.post(
                 f"{self.api_url}/api/generate",
                 json=payload,
-                timeout=self.config.timeout
+                timeout=120
             )
             response.raise_for_status()
             return response.json()["response"]
@@ -332,7 +372,7 @@ class PhiOllamaModel(BaseModel):
                 f"{self.api_url}/api/pull",
                 json=payload,
                 stream=True,
-                timeout=300  # 5 minutes for download
+                timeout=300
             )
             
             for line in response.iter_lines():
@@ -433,7 +473,7 @@ class PhiVLLMModel(BaseModel):
         if self.config.compute_location == ComputeLocation.LOCAL:
             self.vllm_process = VLLMManager.start_vllm_server(self.config)
             return self.vllm_process is not None
-        return True  # Assume remote server is already running
+        return True
     
     def stop_server(self):
         """Stop local vLLM server"""
@@ -461,8 +501,7 @@ class PhiVLLMModel(BaseModel):
                 f"{self.api_url}/chat/completions",
                 headers=self.headers,
                 json=payload,
-                timeout=self.config.timeout
-            )
+                timeout=120           )
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
         except Exception as e:

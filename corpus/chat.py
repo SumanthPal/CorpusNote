@@ -20,12 +20,19 @@ class ChatInterface:
     def __init__(self):
         """Initialize chat interface with Gemini and ChromaDB"""
         # Initialize Gemini
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY not found in config.py")
+        try:
+            from corpus.model_manager import ModelsManager
+            self.models_manager = ModelsManager()
+            self.model = self.models_manager.get_active_model()
+            
+            if not self.model:
+                raise ValueError("No active AI model configured. Run 'corpus models setup' first.")
         
-        genai.configure(api_key=GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(GEMINI_MODEL)
-        
+        except ImportError:
+            if not GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY not found and models manager not available")
+            genai.configure(api_key=GEMINI_API_KEY)
+            self.model = genai.GenerativeModel(GEMINI_MODEL)
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(path=DB_PATH)
         try:
@@ -196,24 +203,27 @@ Context from documents:
 User Question: {query}
 
 Please provide a comprehensive answer based on the above context:"""
-        
+        # Generate response using the active model
         try:
-            # Generate response
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.7,
-                    top_p=0.8,
-                    max_output_tokens=2048,
+            if hasattr(self.model, 'generate_content'):
+                # Gemini model
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.7,
+                        top_p=0.8,
+                        max_output_tokens=2048,
+                    )
                 )
-            )
-            
-            return response.text
-            
+                return response.text
+            else:
+                # Other models (OpenAI, Phi-3, etc.)
+                return self.model.generate(prompt, temperature=0.7, top_p=0.8, max_tokens=2048)
+                
         except Exception as e:
             console.print(f"[red]Generation error: {e}[/red]")
             return f"I encountered an error generating a response: {str(e)}"
-    
+                
     def format_sources_table(self, sources: List[Dict]) -> Table:
         """Create a pretty table of sources with enhanced image info"""
         table = Table(title="Sources Used", show_lines=True)
@@ -340,31 +350,7 @@ Please provide a comprehensive answer based on the above context:"""
             return
         
         # Display enhanced welcome message
-        console.print(Panel.fit(
-            "[bold green]Research Assistant[/bold green]\n"
-            "Chat with your indexed documents including images, diagrams, and text. "
-            "I can help you find and understand information from all your research materials.\n\n"
-            "[bold]Chat Commands:[/bold]\n"
-            "• Type your question and press Enter\n"
-            "• 'clear' - Clear conversation history\n"
-            "• 'sources on/off' - Toggle source display\n"
-            "• 'stats' - Show database statistics\n"
-            "• 'export' - Export conversation to file\n"
-            "• 'exit' or Ctrl+C - Exit chat\n\n"
-            "[bold]Document Commands:[/bold]\n"
-            "• 'search <query>' - Search documents\n"
-            "• 'summarize <filename>' - Summarize a document\n"
-            "• 'preview <filename>' - Preview document content\n"
-            "• 'similar <filename>' - Find similar documents\n"
-            "• 'extract <filename> <topic>' - Extract specific info\n"
-            "• 'compare <file1> <file2>' - Compare documents\n"
-            "• 'topics' - Analyze topics in database\n"
-            "• 'list [pattern]' - List documents\n\n"
-            "[bold]Filter Commands:[/bold]\n"
-            "• 'filter images/text/clear' - Filter content types\n"
-            "• 'focus <filename>' - Focus on specific document",
-            title="Welcome"
-        ))
+        self._show_help()
         
         # Show current status
         self.show_collection_summary()
@@ -531,6 +517,60 @@ Please provide a comprehensive answer based on the above context:"""
                 elif query.strip() == '':
                     continue
                 
+                # Add this section in your interactive_chat() method with the other elif commands:
+
+# Model management commands
+                elif query_lower.startswith('model '):
+                    model_command = query[6:].strip()
+                    
+                    if model_command == 'list':
+                        console.print(self.models_manager.list_models())
+                        console.print("\n[dim]Use 'model switch <name>' to change models[/dim]")
+                        
+                    elif model_command.startswith('switch '):
+                        model_name = model_command[7:].strip()
+                        if not model_name:
+                            console.print("[yellow]Usage: model switch <model_name>[/yellow]")
+                            console.print("Available models:")
+                            for name in self.models_manager.models.keys():
+                                console.print(f"  • {name}")
+                        else:
+                            if self.models_manager.set_active_model(model_name):
+                                self.model = self.models_manager.get_active_model()
+                                if self.model:
+                                    console.print(f"[green]✓ Switched to {model_name}[/green]")
+                                else:
+                                    console.print(f"[yellow]⚠ Switched to {model_name} but model needs configuration[/yellow]")
+                                    console.print("Run 'model refresh' or check API keys")
+                            else:
+                                console.print(f"[red]✗ Failed to switch to {model_name}[/red]")
+                                
+                    elif model_command == 'info':
+                        if self.model:
+                            info = self.model.get_info()
+                            console.print(f"\n[bold]Active Model:[/bold] {info['name']}")
+                            console.print(f"Type: {info['type']}")
+                            console.print(f"Model ID: {info['model_id']}")
+                            console.print(f"Location: {info['location']}")
+                            console.print(f"Context Length: {info['context_length']:,} tokens")
+                            console.print(f"Supports Streaming: {info['supports_streaming']}")
+                        else:
+                            console.print("[yellow]No active model set[/yellow]")
+                            
+                    elif model_command == 'refresh':
+                        console.print("[cyan]Refreshing models...[/cyan]")
+                        self.models_manager.refresh_models()
+                        self.model = self.models_manager.get_active_model()
+                        
+                    else:
+                        console.print("[yellow]Unknown model command. Available:[/yellow]")
+                        console.print("  • model list - Show available models")
+                        console.print("  • model switch <name> - Switch models")
+                        console.print("  • model info - Show current model")
+                        console.print("  • model refresh - Refresh models")
+                    
+                    continue            
+                
                 # Process as regular chat query
                 active_filter = focused_document or content_filter or document_filter
                 with console.status("[bold green]Thinking...[/bold green]"):
@@ -617,13 +657,13 @@ Please provide a comprehensive answer based on the above context:"""
     Document: {filename}
     Content: {full_text[:8000]}"""
             
-            response = self.model.generate_content(prompt)
+            response_text = self._generate_with_model(prompt)
         
         # Display summary
         metadata = results['metadatas'][0] if results['metadatas'] else {}
         console.print(f"\n[bold]Summary[/bold]")
         console.print(f"[dim]Type: {metadata.get('file_type', 'unknown')} | Chunks: {len(results['documents'])}[/dim]\n")
-        console.print(Panel(Markdown(response.text), padding=(1, 2)))
+        console.print(Panel(Markdown(response_text), padding=(1, 2)))
 
     def _handle_preview_command(self, filename: str):
         """Show preview of document content"""
@@ -708,9 +748,9 @@ Please provide a comprehensive answer based on the above context:"""
 
     Extract information about: {topic}"""
             
-            response = self.model.generate_content(prompt)
+            response_text = self._generate_with_model(prompt)
         
-        console.print(Panel(Markdown(response.text), title=f"Extracted: {topic}", padding=(1, 2)))
+        console.print(Panel(Markdown(response_text), title=f"Extracted: {topic}", padding=(1, 2)))
 
     def _handle_compare_command(self, file1: str, file2: str):
         """Compare two documents"""
@@ -744,9 +784,9 @@ Please provide a comprehensive answer based on the above context:"""
     Document 2: {file2}
     {doc2_text[:3000]}"""
             
-            response = self.model.generate_content(prompt)
+            response_text = self._generate_with_model(prompt)
         
-        console.print(Panel(Markdown(response.text), title="Comparison Results", padding=(1, 2)))
+        console.print(Panel(Markdown(response_text), title="Comparison Results", padding=(1, 2)))
 
     def _handle_topics_command(self):
         """Analyze topics across all documents"""
@@ -772,9 +812,9 @@ Please provide a comprehensive answer based on the above context:"""
     Content sample from {len(results['documents'])} documents:
     {sample_text[:5000]}"""
             
-            response = self.model.generate_content(prompt)
+            response_text = self.model.generate_content(prompt)
         
-        console.print(Panel(Markdown(response.text), title="Topic Analysis", padding=(1, 2)))
+        console.print(Panel(Markdown(response_text), title="Topic Analysis", padding=(1, 2)))
 
     def _handle_list_command(self, pattern: str = None):
         """List documents with optional pattern filter"""
@@ -857,6 +897,14 @@ Please provide a comprehensive answer based on the above context:"""
     - filter text - Show only text documents
     - clear filter - Remove all filters
 
+    
+    [bold cyan]AI Model Commands:[/bold cyan]
+    - model list - Show all available AI models and their status
+    - model switch <name> - Switch to a different AI model
+    - model info - Show current active model details
+    - model refresh - Refresh models (pick up new API keys)
+
+
     [bold cyan]Tips:[/bold cyan]
     - Use quotes for multi-word searches: search "machine learning"
     - Partial filenames work: summarize report (matches report.pdf)
@@ -864,8 +912,22 @@ Please provide a comprehensive answer based on the above context:"""
     - Tab completion available for filenames (if enabled)"""
         
         console.print(Panel(help_text, title="Chat Help", padding=(1, 2)))
-        
     
+    def _generate_with_model(self, prompt: str, **kwargs) -> str:
+        """Generate response with any model type"""
+        try:
+            if hasattr(self.model, 'generate_content'):
+                # Gemini model
+                response = self.model.generate_content(prompt)
+                return response.text
+            elif hasattr(self.model, 'generate'):
+                # Other models (OpenAI, Phi-3, etc.)
+                return self.model.generate(prompt, **kwargs)
+            else:
+                return "Error: Unknown model type"
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+        
     def show_collection_summary(self):
         """Display a summary of the document collection"""
         try:

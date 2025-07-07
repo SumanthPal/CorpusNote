@@ -263,7 +263,7 @@ def ask(
 ):
     """Ask a single question about your documents (non-interactive)"""
     chat_interface = LazyLoader.get_chat_interface()
-    chat_interface.ask_single(question, filter_pattern=filter, show_sources=not no_sources)
+    chat_interface.chat(question, document_filter=filter, show_sources=not no_sources)
 
 @app.command()
 def diagram(

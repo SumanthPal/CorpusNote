@@ -284,7 +284,7 @@ class ConfigManager:
         
         try:
             # Import here to avoid circular imports
-            from corpus.models_manager import ModelsManager
+            from corpus.model_manager import ModelsManager
             
             models_manager = ModelsManager()
             
