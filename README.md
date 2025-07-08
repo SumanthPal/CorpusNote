@@ -5,11 +5,13 @@ A powerful command-line tool for indexing, searching, and chatting with your doc
 ## Features ✨
 
 - **Document Indexing**: Index PDFs, text files, markdown, and more with multi-threaded processing
-- **AI Chat Interface**: Chat with your documents using Google's Gemini AI
+- **AI Chat Interface**: Chat with your documents using multi-model support (cloud-based, LAN, local)
+- **Private AI**: Private LLM & SLM support with OLLama and vLLM.
 - **Web Indexing**: Index websites and GitHub repositories
 - **Diagram Generation**: Create beautiful diagrams from natural language or document content
 - **Smart Search**: Vector-based semantic search across all indexed content
 - **Export & Analysis**: Export conversations, analyze document collections
+
 
 ## Installation 🚀
 
