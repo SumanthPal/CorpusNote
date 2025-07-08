@@ -24,6 +24,7 @@ class LazyLoader:
     _diagram_generator = None
     _web_parser = None
     _db_client = None
+    _models_manager = None
 
     @classmethod
     def get_db_client(cls):
@@ -41,7 +42,6 @@ class LazyLoader:
     def get_parser(cls):
         if cls._parser is None:
             from corpus.file_parser import FileParser
-            # Assuming FileParser might use the DB client internally
             cls._parser = FileParser()
         return cls._parser
 
@@ -58,6 +58,13 @@ class LazyLoader:
             from corpus.chat import ChatInterface
             cls._chat_interface = ChatInterface()
         return cls._chat_interface
+
+    @classmethod
+    def get_models_manager(cls):
+        if cls._models_manager is None:
+            from corpus.model_manager import ModelsManager
+            cls._models_manager = ModelsManager()
+        return cls._models_manager
 
     @classmethod
     def get_diagram_generator(cls):
@@ -87,7 +94,6 @@ class LazyLoader:
             )
         return cls._diagram_generator
 
-        
     @staticmethod
     def _check_d2_available():
         """Check if D2 is installed and available"""
@@ -100,8 +106,8 @@ class LazyLoader:
 
 # --- CLI App Definition ---
 app = typer.Typer(
-    name="research",
-    help="Research document chat CLI - Index and chat with your documents using AI",
+    name="corpus",
+    help="Corpus CLI - Index and chat with your documents using AI",
     add_completion=False
 )
 
@@ -257,7 +263,7 @@ def ask(
 ):
     """Ask a single question about your documents (non-interactive)"""
     chat_interface = LazyLoader.get_chat_interface()
-    chat_interface.ask_single(question, filter_pattern=filter, show_sources=not no_sources)
+    chat_interface.chat(question, document_filter=filter, show_sources=not no_sources)
 
 @app.command()
 def diagram(
@@ -1039,7 +1045,169 @@ def main_callback(
     if ctx.invoked_subcommand is None:
         console.print(ctx.get_help())
         raise typer.Exit()
+
+@app.command()
+def models(
+    action: Optional[str] = typer.Argument(None, help="Action: list, setup, switch, add, remove"),
+    model_name: Optional[str] = typer.Argument(None, help="Model name for switch/remove actions")
+):
+    """Manage AI models (OpenAI, Gemini, Phi-3, vLLM)"""
+    print_header("Model Management")
+    models_manager = LazyLoader.get_models_manager()
     
+    if not action:
+        # Default: show model list and status
+        console.print(models_manager.list_models())
+        console.print("\n[dim]Use 'corpus models setup' to configure models[/dim]")
+        console.print("[dim]Use 'corpus models switch <name>' to change active model[/dim]")
+        return
+    
+    if action == "list":
+        console.print(models_manager.list_models())
+        models_manager.check_all_models()
+    
+    elif action == "setup":
+        models_manager.interactive_setup()
+    
+    elif action == "switch":
+        if not model_name:
+            console.print("[red]Model name required for switch action[/red]")
+            console.print("Available models:")
+            for name in models_manager.models.keys():
+                console.print(f"  • {name}")
+            raise typer.Exit(1)
+        
+        if models_manager.set_active_model(model_name):
+            console.print(f"[green]✓ Switched to {model_name}[/green]")
+        else:
+            raise typer.Exit(1)
+    
+    elif action == "add":
+        console.print("[yellow]Interactive model addition not implemented yet[/yellow]")
+        console.print("Use 'corpus models setup' for guided configuration")
+    
+    elif action == "remove":
+        if not model_name:
+            console.print("[red]Model name required for remove action[/red]")
+            raise typer.Exit(1)
+        
+        if models_manager.remove_model(model_name):
+            console.print(f"[green]✓ Removed {model_name}[/green]")
+        else:
+            raise typer.Exit(1)
+    
+    else:
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: list, setup, switch, add, remove")
+        raise typer.Exit(1)
+
+@app.command()
+def model_status():
+    """Check status of all configured models"""
+    print_header("Model Status Check")
+    models_manager = LazyLoader.get_models_manager()
+    
+    if not models_manager.models:
+        console.print("[red]No models configured. Run 'corpus models setup' first.[/red]")
+        return
+    
+    models_manager.check_all_models()
+    
+    # Show active model
+    active = models_manager.get_active_model()
+    if active:
+        console.print(f"\n[bold]Active Model:[/bold] {active.name}")
+        if active.is_available():
+            console.print("[green]✓ Active model is available[/green]")
+        else:
+            console.print("[red]✗ Active model is not available[/red]")
+    else:
+        console.print("\n[yellow]No active model set[/yellow]")
+
+@app.command()
+def setup_phi3():
+    """Setup Phi-3 models (both Ollama and vLLM)"""
+    print_header("Phi-3 Setup")
+    models_manager = LazyLoader.get_models_manager()
+    
+    console.print("\n[bold]Phi-3 Setup Options:[/bold]")
+    console.print("1. Setup Phi-3 via Ollama (easier, good for local use)")
+    console.print("2. Setup Phi-3 via vLLM (more complex, better performance)")
+    console.print("3. Setup both")
+    
+    choice = typer.prompt("Choose option (1-3)", type=int)
+    
+    if choice in [1, 3]:
+        console.print("\n[bold]Setting up Phi-3 via Ollama...[/bold]")
+        if models_manager.setup_phi3_ollama():
+            console.print("[green]✓ Phi-3 Ollama setup successful[/green]")
+        else:
+            console.print("[red]✗ Phi-3 Ollama setup failed[/red]")
+    
+    if choice in [2, 3]:
+        console.print("\n[bold]Setting up Phi-3 via vLLM...[/bold]")
+        if models_manager.setup_phi3_vllm():
+            console.print("[green]✓ Phi-3 vLLM setup successful[/green]")
+        else:
+            console.print("[red]✗ Phi-3 vLLM setup failed[/red]")
+
+@app.command()
+def setup_vllm(
+    host: str = typer.Option("localhost", "--host", help="Host to run vLLM server"),
+    port: int = typer.Option(8000, "--port", help="Port for vLLM server"),
+    model: str = typer.Option("microsoft/Phi-3-mini-4k-instruct", "--model", help="Model to serve"),
+    gpu_memory: float = typer.Option(0.8, "--gpu-memory", help="GPU memory utilization (0.0-1.0)"),
+    tensor_parallel: int = typer.Option(1, "--tensor-parallel", help="Tensor parallel size")
+):
+    """Setup and start a vLLM server"""
+    print_header("vLLM Server Setup")
+    
+    from corpus.models import VLLMManager, ModelConfig, ModelType, ComputeLocation
+    
+    # Create vLLM config
+    config = ModelConfig(
+        name=f"vllm-{model.split('/')[-1]}",
+        model_type=ModelType.PHI_VLLM,
+        model_id=model,
+        compute_location=ComputeLocation.LOCAL,
+        host=host,
+        port=port,
+        gpu_memory_utilization=gpu_memory,
+        tensor_parallel_size=tensor_parallel
+    )
+    
+    # Install vLLM if needed
+    try:
+        import vllm
+        console.print("[green]✓ vLLM is already installed[/green]")
+    except ImportError:
+        console.print("[yellow]vLLM not found, installing...[/yellow]")
+        if not VLLMManager.install_vllm():
+            console.print("[red]Failed to install vLLM[/red]")
+            raise typer.Exit(1)
+    
+    # Start server
+    console.print(f"[cyan]Starting vLLM server for {model}...[/cyan]")
+    process = VLLMManager.start_vllm_server(config)
+    
+    if process:
+        console.print(f"[green]✓ vLLM server started successfully![/green]")
+        console.print(f"Server running at: http://{host}:{port}")
+        console.print(f"API endpoint: http://{host}:{port}/v1")
+        console.print("\n[yellow]Press Ctrl+C to stop the server[/yellow]")
+        
+        try:
+            # Keep the server running
+            process.wait()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopping vLLM server...[/yellow]")
+            process.terminate()
+            console.print("[green]✓ Server stopped[/green]")
+    else:
+        console.print("[red]Failed to start vLLM server[/red]")
+        raise typer.Exit(1)
+
+
 create_config_commands(app)
 # Entry point
 if __name__ == "__main__":

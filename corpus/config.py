@@ -22,6 +22,8 @@ def _get_config_value(key: str, default_value):
 
 # API Keys - Always check environment first, then config manager
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or _get_config_value("GEMINI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or _get_config_value("OPENAI_API_KEY", "")
+
 
 # Storage paths
 DB_PATH = _get_config_value("DB_PATH", './research.db')
