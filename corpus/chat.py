@@ -162,8 +162,9 @@ class ChatInterface:
         
         return full_context, sources
     
+        
     def generate_response(self, query: str, context: str, sources: List[Dict]) -> str:
-        """Generate response using Gemini with enhanced image awareness"""
+        """Generate response using any model with enhanced image awareness"""
         # Analyze sources to understand content types
         has_images = any(source.get('content_type') == 'image' for source in sources)
         has_text = any(source.get('content_type') != 'image' for source in sources)
@@ -179,51 +180,33 @@ class ChatInterface:
         image_instructions = ""
         if has_images:
             image_instructions = """
-IMPORTANT: Some of the provided context comes from images (diagrams, charts, figures, etc.). 
-- Image content includes both OCR-extracted text and AI-generated descriptions
-- When referencing image content, mention that it comes from an image/diagram/figure
-- Be specific about visual elements described in the context
-- If discussing relationships shown in diagrams, explain them clearly
-"""
+    IMPORTANT: Some of the provided context comes from images (diagrams, charts, figures, etc.). 
+    - Image content includes both OCR-extracted text and AI-generated descriptions
+    - When referencing image content, mention that it comes from an image/diagram/figure
+    - Be specific about visual elements described in the context
+    - If discussing relationships shown in diagrams, explain them clearly
+    """
         
         prompt = f"""You are a helpful research assistant. Your task is to answer questions based ONLY on the provided document excerpts.
 
-Important instructions:
-1. Base your answer solely on the provided context
-2. If the answer isn't in the context, say "I couldn't find information about that in the indexed documents"
-3. When referencing information, mention which document it comes from
-4. Be specific and accurate
-5. If multiple documents discuss the topic, synthesize the information
-6. {'IMAGE CONTENT: ' + image_instructions if has_images else ''}
-{history_context}
+    Important instructions:
+    1. Base your answer solely on the provided context
+    2. If the answer isn't in the context, say "I couldn't find information about that in the indexed documents"
+    3. When referencing information, mention which document it comes from
+    4. Be specific and accurate
+    5. If multiple documents discuss the topic, synthesize the information
+    6. {'IMAGE CONTENT: ' + image_instructions if has_images else ''}
+    {history_context}
 
-Context from documents:
-{context}
+    Context from documents:
+    {context}
 
-User Question: {query}
+    User Question: {query}
 
-Please provide a comprehensive answer based on the above context:"""
+    Please provide a comprehensive answer based on the above context:"""
+
         # Generate response using the active model
-        try:
-            if hasattr(self.model, 'generate_content'):
-                # Gemini model
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.7,
-                        top_p=0.8,
-                        max_output_tokens=2048,
-                    )
-                )
-                return response.text
-            else:
-                # Other models (OpenAI, Phi-3, etc.)
-                return self.model.generate(prompt, temperature=0.7, top_p=0.8, max_tokens=2048)
-                
-        except Exception as e:
-            console.print(f"[red]Generation error: {e}[/red]")
-            return f"I encountered an error generating a response: {str(e)}"
-                
+        return self._generate_with_model(prompt, temperature=0.7, top_p=0.8, max_tokens=2048)
     def format_sources_table(self, sources: List[Dict]) -> Table:
         """Create a pretty table of sources with enhanced image info"""
         table = Table(title="Sources Used", show_lines=True)
@@ -316,7 +299,9 @@ Please provide a comprehensive answer based on the above context:"""
         
         # Generate response
         console.print("[dim]Generating response...[/dim]")
+        # temporarily disabling context and sources
         response = self.generate_response(query, context, sources)
+
         
         # Update history
         self.add_to_history("user", query)
@@ -919,16 +904,30 @@ Please provide a comprehensive answer based on the above context:"""
         try:
             if hasattr(self.model, 'generate_content'):
                 # Gemini model
-                response = self.model.generate_content(prompt)
+                import google.generativeai as genai
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=kwargs.get("temperature", 0.7),
+                        top_p=kwargs.get("top_p", 0.8),
+                        max_output_tokens=kwargs.get("max_tokens", 2048),
+                    )
+                )
                 return response.text
             elif hasattr(self.model, 'generate'):
                 # Other models (OpenAI, Phi-3, etc.)
-                return self.model.generate(prompt, **kwargs)
+                return self.model.generate(
+                    prompt, 
+                    temperature=kwargs.get("temperature", 0.7),
+                    top_p=kwargs.get("top_p", 0.8),
+                    max_tokens=kwargs.get("max_tokens", 2048)
+                )
             else:
                 return "Error: Unknown model type"
         except Exception as e:
             return f"Error generating response: {str(e)}"
-        
+
+  
     def show_collection_summary(self):
         """Display a summary of the document collection"""
         try:

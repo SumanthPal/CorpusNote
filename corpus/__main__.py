@@ -263,8 +263,26 @@ def ask(
 ):
     """Ask a single question about your documents (non-interactive)"""
     chat_interface = LazyLoader.get_chat_interface()
-    chat_interface.chat(question, document_filter=filter, show_sources=not no_sources)
+    response = chat_interface.chat(question, document_filter=filter, show_sources=not no_sources)
+    if response:
+        # Display the response in a box
+        console.print(Panel(response['response'], title="Answer", style="green", padding=(1, 2)))
 
+        # Display sources if available
+        if response['sources'] and not no_sources:
+            console.print("\n[bold]Sources:[/bold]")
+            for source in response['sources']:
+                source_info = (
+                    f"Document: [cyan]{source['document']}[/cyan], "
+                    f"Page: [yellow]{source['page']}[/yellow], "
+                    f"Chunk: {source['chunk']}/{source['total_chunks']}, "
+                    f"Relevance: {1 - source['relevance']:.2f}, "
+                    f"Type: {source['content_type']} ({source['file_type']})"
+                )
+                console.print(f"  - {source_info}")
+    else:
+        console.print("[red]No relevant information found[/red]")
+        raise typer.Exit(1)
 @app.command()
 def diagram(
     query: Optional[str] = typer.Argument(None, help="Direct diagram generation query"),
