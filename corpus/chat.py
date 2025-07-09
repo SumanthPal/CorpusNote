@@ -83,6 +83,153 @@ class ChatInterface:
             console.print(f"[red]Search error: {e}[/red]")
             return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
     
+    def export_conversation(self, output_filename: str = None) -> Optional[str]:
+        """Export current conversation history to markdown file"""
+        if not self.history:
+            console.print("[yellow]No conversation history to export[/yellow]")
+            return None
+        
+        # Generate filename if not provided
+        if not output_filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"corpus_chat_{timestamp}.md"
+        
+        # Ensure .md extension
+        if not output_filename.endswith('.md'):
+            output_filename += '.md'
+        
+        # Create output path
+        output_path = Path(output_filename)
+        if not output_path.is_absolute():
+            # Save in current directory or a dedicated exports folder
+            exports_dir = Path.cwd() / "corpus_exports"
+            exports_dir.mkdir(exist_ok=True)
+            output_path = exports_dir / output_filename
+        
+        try:
+            # Build markdown content
+            markdown_content = self._build_markdown_export()
+            
+            # Write to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+            
+            console.print(f"[green]✓ Conversation exported to: {output_path}[/green]")
+            return str(output_path)
+            
+        except Exception as e:
+            console.print(f"[red]Failed to export conversation: {e}[/red]")
+            return None
+
+    def _build_markdown_export(self) -> str:
+        """Build formatted markdown content from conversation history"""
+        # Header with metadata
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Get collection stats for context
+        collection_info = ""
+        try:
+            if self.collection_exists:
+                count = self.collection.count()
+                collection_info = f"\n- **Database**: {count:,} chunks indexed"
+        except:
+            collection_info = "\n- **Database**: Information unavailable"
+        
+        # Active model info
+        model_info = ""
+        try:
+            if hasattr(self, 'model') and self.model:
+                if hasattr(self.model, 'get_info'):
+                    info = self.model.get_info()
+                    model_info = f"\n- **Model**: {info['name']} ({info['type']})"
+                elif hasattr(self.model, 'model_name'):
+                    model_info = f"\n- **Model**: {self.model.model_name}"
+                else:
+                    model_info = "\n- **Model**: Configured model"
+        except:
+            model_info = "\n- **Model**: Unknown"
+        
+        markdown_lines = [
+            "# Corpus Chat Export",
+            "",
+            f"**Exported**: {timestamp}",
+            f"**Exchanges**: {len(self.history) // 2} Q&A pairs{collection_info}{model_info}",
+            "",
+            "---",
+            ""
+        ]
+        
+        # Process conversation history
+        current_exchange = 1
+        user_message = None
+        
+        for entry in self.history:
+            role = entry['role']
+            content = entry['content']
+            timestamp = entry.get('timestamp', '')
+            
+            # Format timestamp
+            if timestamp:
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    time_str = dt.strftime("%H:%M:%S")
+                except:
+                    time_str = timestamp[:8] if len(timestamp) >= 8 else ""
+            else:
+                time_str = ""
+            
+            if role == 'user':
+                # Start new exchange
+                user_message = content
+                markdown_lines.extend([
+                    f"## Exchange {current_exchange}" + (f" *({time_str})*" if time_str else ""),
+                    "",
+                    f"**You**: {content}",
+                    ""
+                ])
+            
+            elif role == 'assistant' and user_message:
+                # Complete the exchange
+                markdown_lines.extend([
+                    f"**Assistant**: {content}",
+                    "",
+                    "---",
+                    ""
+                ])
+                current_exchange += 1
+                user_message = None
+        
+        # Handle case where last message was from user (no assistant response)
+        if user_message and self.history and self.history[-1]['role'] == 'user':
+            markdown_lines.extend([
+                "*[No assistant response recorded]*",
+                "",
+                "---",
+                ""
+            ])
+        
+        # Footer
+        markdown_lines.extend([
+            "",
+            f"*Exported from Corpus CLI at {timestamp}*"
+        ])
+        
+        return "\n".join(markdown_lines)
+
+    def _get_conversation_stats(self) -> Dict[str, any]:
+        """Get statistics about the current conversation"""
+        if not self.history:
+            return {"exchanges": 0, "user_messages": 0, "assistant_messages": 0}
+        
+        user_count = sum(1 for h in self.history if h['role'] == 'user')
+        assistant_count = sum(1 for h in self.history if h['role'] == 'assistant')
+        
+        return {
+            "exchanges": min(user_count, assistant_count),
+            "user_messages": user_count,
+            "assistant_messages": assistant_count,
+            "total_messages": len(self.history)
+        } 
     def format_context(self, results: dict, show_metadata: bool = True) -> Tuple[str, List[Dict]]:
         """Format search results into context for LLM with enhanced image handling"""
         if not results['documents'] or not results['documents'][0]:

@@ -919,15 +919,16 @@ Content:
 {full_text[:10000]}{'...' if len(full_text) > 10000 else ''}"""
         
         # Show progress
+        # Use the existing method properly
         with console.status("[bold green]Generating summary..."):
-            response = chat_interface.model.generate_content(prompt)
-        
+            response = chat_interface._generate_with_model(prompt)
+
         # Display summary
         console.print(f"\n[bold]Summary of {filename}[/bold]")
         console.print(f"[dim]Document type: {doc_metadata.get('file_type', 'unknown')}[/dim]")
         console.print(f"[dim]Chunks: {len(results['documents'])}[/dim]\n")
-        
-        console.print(Panel(response.text, title=f"{detail.capitalize()} Summary", padding=(1, 2)))
+
+        console.print(Panel(response, title=f"{detail.capitalize()} Summary", padding=(1, 2)))
         
     except Exception as e:
         console.print(f"[red]Error generating summary: {e}[/red]")
@@ -1019,7 +1020,7 @@ Extract and organize all relevant information about: {topic}"""
     
     # Extract information
     with console.status(f"[bold green]Extracting information about '{topic}'..."):
-        response = chat_interface.model.generate_content(prompt)
+        response = chat_interface._generate_with_model(prompt)
     
     # Display results
     console.print(f"\n[bold]Extracted: {topic}[/bold]")
@@ -1029,12 +1030,12 @@ Extract and organize all relevant information about: {topic}"""
         # Try to pretty-print JSON
         try:
             import json
-            parsed = json.loads(response.text)
+            parsed = json.loads(response.response)
             console.print_json(data=parsed)
         except:
-            console.print(response.text)
+            console.print(response)
     else:
-        console.print(Panel(response.text, padding=(1, 2))) 
+        console.print(Panel(response, padding=(1, 2))) 
         
          
 @app.callback(invoke_without_command=True)
