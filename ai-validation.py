@@ -7,7 +7,7 @@ import json
 
 
 class EventParser:
-    def __init__(self, username: str):
+   def __init__(self, username: str):
         # Load the spaCy language model
         self.nlp = spacy.load('en_core_web_md')
         self.username = username

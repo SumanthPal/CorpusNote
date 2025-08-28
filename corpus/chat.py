@@ -575,7 +575,65 @@ class ChatInterface:
                 console.print("\n[yellow]Use 'exit' to quit[/yellow]")
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
-
+    def export_conversation(self):
+        """Export conversation history to file"""
+        if not self.history:
+            console.print("[yellow]No conversation history to export[/yellow]")
+            return
+        
+        # Create timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create exports directory if it doesn't exist
+        exports_dir = Path("exports")
+        exports_dir.mkdir(exist_ok=True)
+        
+        # Prepare export data
+        export_data = {
+            "exported_at": datetime.now().isoformat(),
+            "total_exchanges": len(self.history) // 2,  # Pairs of user/assistant
+            "conversation": self.history
+        }
+        
+        try:
+            # Export as JSON
+            json_filename = exports_dir / f"conversation_{timestamp}.json"
+            with open(json_filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            
+            # Also export as readable Markdown
+            md_filename = exports_dir / f"conversation_{timestamp}.md"
+            with open(md_filename, 'w', encoding='utf-8') as f:
+                f.write(f"# Chat Conversation\n\n")
+                f.write(f"**Exported:** {export_data['exported_at']}\n")
+                f.write(f"**Total Exchanges:** {export_data['total_exchanges']}\n\n")
+                f.write("---\n\n")
+                
+                for entry in self.history:
+                    role = "**You:**" if entry['role'] == 'user' else "**Assistant:**"
+                    timestamp_str = entry.get('timestamp', '')
+                    if timestamp_str:
+                        # Format timestamp nicely
+                        try:
+                            dt = datetime.fromisoformat(timestamp_str)
+                            time_formatted = dt.strftime("%H:%M:%S")
+                        except:
+                            time_formatted = timestamp_str
+                        f.write(f"{role} *({time_formatted})*\n\n")
+                    else:
+                        f.write(f"{role}\n\n")
+                    
+                    f.write(f"{entry['content']}\n\n")
+                    f.write("---\n\n")
+            
+            # Success message
+            console.print(f"[green]✓ Conversation exported successfully![/green]")
+            console.print(f"  • JSON: [cyan]{json_filename}[/cyan]")
+            console.print(f"  • Markdown: [cyan]{md_filename}[/cyan]")
+            console.print(f"[dim]Exported {len(self.history)} messages ({export_data['total_exchanges']} exchanges)[/dim]")
+            
+        except Exception as e:
+            console.print(f"[red]Error exporting conversation: {e}[/red]")
     def _handle_search_command(self, search_query: str, focused_document: str = None):
         """Handle document search within chat"""
         console.print(f"\n[bold]Searching for: '{search_query}'[/bold]")
